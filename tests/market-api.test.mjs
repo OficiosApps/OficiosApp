@@ -778,6 +778,84 @@ test("commercial settings are CEO-only, versioned, audited and published without
   );
 });
 
+test("city switches are CEO-only, preserve other settings and audit successful changes once", async () => {
+  const { db, env } = setup();
+  for (const [user, role] of [
+    ["super", "superadmin"],
+    ["admin", "admin"],
+  ])
+    db.prepare("INSERT INTO staff(user_id,role,invited_by,created_at) VALUES(?,?,?,?)").run(
+      user,
+      role,
+      "ceo",
+      1,
+    );
+  const path = "/ceo/regions/lujan-ba/status";
+  for (const user of [null, "client", "super", "admin"])
+    assert.equal((await call(env, path, user, { version: 0, active: true }, "PATCH")).status, 403);
+  for (const active of ["true", 1, null])
+    assert.equal((await call(env, path, "ceo", { version: 0, active }, "PATCH")).status, 400);
+  assert.equal(
+    (await call(env, "/ceo/regions/missing/status", "ceo", { version: 0, active: true }, "PATCH"))
+      .status,
+    404,
+  );
+  const initial = (await call(env, "/ceo/config", "ceo")).data;
+  const config = structuredClone(initial.config);
+  config.plans[1].priceCents = 1550;
+  config.referrals.rewardQuotes = 7;
+  const custom = await call(env, "/ceo/config", "ceo", { version: initial.version, config }, "PUT");
+  assert.equal(custom.status, 200);
+  const results = await Promise.all([
+    call(env, path, "ceo", { version: custom.data.version, active: true }, "PATCH"),
+    call(env, path, "ceo", { version: custom.data.version, active: true }, "PATCH"),
+  ]);
+  assert.deepEqual(results.map((r) => r.status).sort(), [200, 409]);
+  const saved = (await call(env, "/ceo/config", "ceo")).data;
+  const expected = structuredClone(config);
+  expected.regions.find((r) => r.id === "lujan-ba").status = "activa";
+  assert.deepEqual(saved.config, expected);
+  assert.ok((await call(env, "/config", null)).data.regions.some((r) => r.id === "lujan-ba"));
+  const entries = db.prepare("SELECT * FROM commercial_audit WHERE action='region-status'").all();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].actor_id, "ceo");
+  assert.equal(entries[0].entity_id, "lujan-ba");
+  assert.equal(JSON.parse(entries[0].before_json).status, "preparacion");
+  assert.equal(JSON.parse(entries[0].after_json).status, "activa");
+  assert.equal(
+    (await call(env, path, "ceo", { version: custom.data.version, active: false }, "PATCH")).status,
+    409,
+  );
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM commercial_audit").get().n, 2);
+});
+
+test("city switches allow closing the last city and reopening it without losing existing jobs", async () => {
+  const { env } = setup();
+  await register(env, "existing-client");
+  const created = await call(env, "/jobs", "existing-client", details);
+  assert.equal(created.status, 201);
+  let saved = (await call(env, "/ceo/config", "ceo")).data;
+  const path = "/ceo/regions/mercedes-ba/status";
+  const closed = await call(env, path, "ceo", { version: saved.version, active: false }, "PATCH");
+  assert.equal(closed.status, 200);
+  assert.equal(closed.data.config.regions.find((r) => r.id === "mercedes-ba").status, "pausada");
+  assert.deepEqual((await call(env, "/config", null)).data.regions, []);
+  assert.equal((await call(env, "/jobs", "existing-client", details)).status, 400);
+  assert.equal(
+    (await call(env, "/account", "new-client", await clientRegistration(env, "new-client"))).status,
+    400,
+  );
+  assert.equal((await call(env, "/account", "new-pro", profile("profesional"))).status, 400);
+  assert.equal((await call(env, "/jobs/" + created.data.job.id, "existing-client")).status, 200);
+  saved = (await call(env, "/ceo/config", "ceo")).data;
+  assert.equal(
+    (await call(env, path, "ceo", { version: saved.version, active: true }, "PATCH")).status,
+    200,
+  );
+  assert.equal((await call(env, "/jobs", "existing-client", details)).status, 201);
+  assert.equal((await call(env, "/account", "new-pro", profile("profesional"))).status, 201);
+});
+
 test("zone activation opens registration and orders, while pausing preserves existing work", async () => {
   const { env } = setup();
   assert.equal(

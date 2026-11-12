@@ -197,10 +197,6 @@ export function validateMarketConfig(input, previous) {
       ids.has(old.id),
       "No elimines zonas con historial: dejalas pausadas o en preparación.",
     );
-  requireMarket(
-    regions.some((r) => r.status === "activa"),
-    "Debe quedar al menos una zona activa.",
-  );
   return {
     plans,
     referrals: {
@@ -348,14 +344,39 @@ export async function handleCeo(request, env, viewer, bodyReader) {
       },
     });
   }
-  if (path === "/api/market/ceo/config" && request.method === "PUT") {
+  const regionPath = path.match(/^\/api\/market\/ceo\/regions\/([^/]+)\/status$/);
+  if (
+    (path === "/api/market/ceo/config" && request.method === "PUT") ||
+    (regionPath && request.method === "PATCH")
+  ) {
     const input = await bodyReader(request);
     requireMarket(
       input.version === stored.version,
       "La configuración cambió. Actualizá antes de guardar.",
       409,
     );
-    const config = validateMarketConfig(input.config, stored.config),
+    let candidate = input.config,
+      action = "commercial-settings",
+      entityId = "commercial",
+      before = stored.config;
+    if (regionPath) {
+      requireMarket(
+        typeof input.active === "boolean",
+        "Indicá si la ciudad está de alta o de baja.",
+      );
+      const region = stored.config.regions.find((r) => r.id === regionPath[1]);
+      requireMarket(region, "La ciudad no existe.", 404);
+      action = "region-status";
+      entityId = region.id;
+      before = region;
+      candidate = {
+        ...stored.config,
+        regions: stored.config.regions.map((r) =>
+          r.id === region.id ? { ...r, status: input.active ? "activa" : "pausada" } : r,
+        ),
+      };
+    }
+    const config = validateMarketConfig(candidate, stored.config),
       now = Date.now(),
       token = crypto.randomUUID();
     const results = await env.DB.batch([
@@ -370,12 +391,14 @@ export async function handleCeo(request, env, viewer, bodyReader) {
         stored.version,
       ),
       env.DB.prepare(
-        "INSERT INTO commercial_audit(id,actor_id,action,entity_id,before_json,after_json,created_at) SELECT ?,?,'commercial-settings','commercial',?,?,? FROM market_settings WHERE setting_key = 'commercial' AND update_token = ?",
+        "INSERT INTO commercial_audit(id,actor_id,action,entity_id,before_json,after_json,created_at) SELECT ?,?,?,?,?,?,? FROM market_settings WHERE setting_key = 'commercial' AND update_token = ?",
       ).bind(
         token,
         viewer.identity.id,
-        JSON.stringify(stored.config),
-        JSON.stringify(config),
+        action,
+        entityId,
+        JSON.stringify(before),
+        JSON.stringify(regionPath ? config.regions.find((r) => r.id === entityId) : config),
         now,
         token,
       ),

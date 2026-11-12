@@ -23,7 +23,7 @@ export function MarketAccountPage({
   referralCode?: string;
 }) {
   const { session, loading, error, refresh } = useMarket();
-  const { cities: activeCities, error: configError } = useMarketConfig();
+  const { cities: activeCities, error: configError, data: marketConfig } = useMarketConfig();
   const [clientSelfieId, setClientSelfieId] = useState("");
   const [clientSelfieConsent, setClientSelfieConsent] = useState(false);
   const [referral, setReferral] = useState(referralCode);
@@ -181,6 +181,11 @@ export function MarketAccountPage({
                 </option>
               ))}
             </select>
+            {marketConfig && !activeCities.length && (
+              <p role="status" className="text-sm text-muted-foreground">
+                Por el momento no hay ciudades habilitadas para nuevos registros.
+              </p>
+            )}
           </div>
           {registrationKind !== "cliente" && (
             <div className="space-y-2">
@@ -567,7 +572,7 @@ export function IdentitySubmission() {
 
 function EnableProfessionalServices() {
   const { session, refresh } = useMarket();
-  const { cities: activeCities, error: configError } = useMarketConfig();
+  const { cities: activeCities, error: configError, data: marketConfig } = useMarketConfig();
   const [kind, setKind] = useState("profesional"),
     [trade, setTrade] = useState(categorias[0]!.slug),
     [cityId, setCity] = useState(session.account!.cityId),
@@ -628,12 +633,22 @@ function EnableProfessionalServices() {
         onChange={(e) => setCity(e.target.value)}
         className="h-11 w-full rounded-md border border-input bg-background px-3"
       >
+        {!activeCities.some((c) => c.id === cityId) && (
+          <option value={cityId} disabled>
+            Elegí una zona habilitada
+          </option>
+        )}
         {activeCities.map((c) => (
           <option key={c.id} value={c.id}>
             {c.nombre}
           </option>
         ))}
       </select>
+      {marketConfig && !activeCities.length && (
+        <p role="status" className="text-sm text-muted-foreground">
+          Por el momento no hay ciudades habilitadas para nuevos registros.
+        </p>
+      )}
       <MarketErrorText error={issue || configError} />
       <Button disabled={busy || !activeCities.some((c) => c.id === cityId)}>
         Agregar mi perfil profesional

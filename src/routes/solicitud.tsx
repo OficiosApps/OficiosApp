@@ -61,7 +61,7 @@ function NuevaSolicitud() {
   const { categoria: categoriaInicial } = Route.useSearch();
   const navigate = useNavigate();
   const { session, loading } = useMarket();
-  const { cities: activeCities, error: configError } = useMarketConfig();
+  const { cities: activeCities, error: configError, data: marketConfig } = useMarketConfig();
   const [location, setLocation] = useState<MapPoint | null>(null);
   const operationsReady = Boolean(session.account) && !loading;
   const [saving, setSaving] = useState(false);
@@ -395,6 +395,11 @@ function NuevaSolicitud() {
                         </option>
                       ))}
                     </select>
+                    {marketConfig && !activeCities.length && (
+                      <p role="status" className="text-sm text-muted-foreground">
+                        Por el momento no hay ciudades habilitadas para nuevos pedidos.
+                      </p>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="tel">Teléfono o WhatsApp</Label>

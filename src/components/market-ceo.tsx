@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { MarketNotice, MarketErrorText } from "@/components/market-common";
@@ -34,6 +35,7 @@ type MapOrder = {
 };
 export function LiveCeoPanel() {
   const { data, loading, error, refresh } = useRemote<CeoData>("/ceo/config");
+  const [tab, setTab] = useState("mapa");
   return (
     <ManagementLayout>
       <div className="mb-7 flex flex-wrap gap-3">
@@ -60,17 +62,30 @@ export function LiveCeoPanel() {
                 <article key={String(label)} className="surface-panel p-5">
                   <p className="text-xs text-muted-foreground">{label}</p>
                   <p className="mt-3 font-display text-2xl font-semibold">{value}</p>
+                  {label === "Zonas en preparación" && (
+                    <Button
+                      variant="link"
+                      className="mt-2 h-auto p-0"
+                      onClick={() => setTab("ciudades")}
+                    >
+                      Administrar ciudades
+                    </Button>
+                  )}
                 </article>
               ))}
             </div>
-            <Tabs defaultValue="mapa">
+            <Tabs value={tab} onValueChange={setTab}>
               <TabsList className="h-auto flex-wrap justify-start gap-1">
                 <TabsTrigger value="mapa">Mapa de pedidos</TabsTrigger>
+                <TabsTrigger value="ciudades">Ciudades</TabsTrigger>
                 <TabsTrigger value="gestion">Planes, referidos y zonas</TabsTrigger>
                 <TabsTrigger value="equipo">Equipo e invitaciones</TabsTrigger>
                 <TabsTrigger value="operacion">Operación</TabsTrigger>
                 <TabsTrigger value="historial">Historial de cambios</TabsTrigger>
               </TabsList>
+              <TabsContent value="ciudades" className="mt-6">
+                <CitySwitches data={data} onSaved={refresh} />
+              </TabsContent>
               <TabsContent value="equipo" className="mt-6">
                 <StaffWorkspace section="team" />
               </TabsContent>
@@ -99,7 +114,9 @@ export function LiveCeoPanel() {
                       <p className="text-sm font-semibold">
                         {item.action === "commercial-settings"
                           ? "Configuración de planes, referidos y zonas"
-                          : "Ubicación de un pedido"}
+                          : item.action === "region-status"
+                            ? `Alta/baja de ciudad: ${data.config.regions.find((r) => r.id === item.entity_id)?.name ?? item.entity_id}`
+                            : "Ubicación de un pedido"}
                       </p>
                       <p className="text-xs text-muted-foreground">
                         {new Intl.DateTimeFormat("es-AR", {
@@ -117,6 +134,83 @@ export function LiveCeoPanel() {
         )
       )}
     </ManagementLayout>
+  );
+}
+function CitySwitches({ data, onSaved }: { data: CeoData; onSaved: () => Promise<void> }) {
+  const [saved, setSaved] = useState({ config: data.config, version: data.version });
+  const [busy, setBusy] = useState<string | null>(null);
+  const [issue, setIssue] = useState("");
+  useEffect(() => {
+    setSaved({ config: data.config, version: data.version });
+  }, [data.config, data.version]);
+  async function changeStatus(region: MarketRegion, active: boolean) {
+    if (busy) return;
+    setBusy(region.id);
+    setIssue("");
+    try {
+      const next = await marketApi<{ config: CommercialConfig; version: number }>(
+        `/ceo/regions/${region.id}/status`,
+        { method: "PATCH", body: JSON.stringify({ version: saved.version, active }) },
+      );
+      setSaved(next);
+      toast.success(`${region.name}: ${active ? "dada de alta" : "dada de baja"}`);
+      await onSaved();
+    } catch (e) {
+      setIssue(e instanceof Error ? e.message : "No pudimos cambiar el estado de la ciudad.");
+      await onSaved();
+    } finally {
+      setBusy(null);
+    }
+  }
+  return (
+    <section className="space-y-5" aria-labelledby="cities-heading">
+      <div>
+        <h2 id="cities-heading" className="font-display text-2xl font-semibold">
+          Ciudades: alta y baja
+        </h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Encendé el switch para habilitar nuevos registros y pedidos. Apagalo para darlos de baja
+          en esa ciudad. Los trabajos existentes continúan. Cada cambio se guarda automáticamente.
+        </p>
+      </div>
+      <MarketErrorText error={issue} />
+      <div className="grid gap-4 md:grid-cols-2">
+        {saved.config.regions.map((region) => {
+          const active = region.status === "activa";
+          const status = active
+            ? "De alta"
+            : region.status === "preparacion"
+              ? "En preparación"
+              : "De baja";
+          return (
+            <article
+              key={region.id}
+              className="surface-panel flex items-center justify-between gap-4 p-5"
+            >
+              <div className="min-w-0">
+                <Label htmlFor={`city-status-${region.id}`} className="text-base font-semibold">
+                  {region.name}
+                </Label>
+                <p className="mt-1 text-sm text-muted-foreground">{region.province}</p>
+                <p
+                  className={`mt-3 text-sm font-medium ${active ? "text-primary" : "text-muted-foreground"}`}
+                  aria-live="polite"
+                >
+                  {busy === region.id ? "Guardando…" : status}
+                </p>
+              </div>
+              <Switch
+                id={`city-status-${region.id}`}
+                aria-label={`Dar de alta o baja a ${region.name}`}
+                checked={active}
+                disabled={busy !== null}
+                onCheckedChange={(value) => void changeStatus(region, value)}
+              />
+            </article>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 function CommercialEditor({ data, onSaved }: { data: CeoData; onSaved: () => Promise<void> }) {
