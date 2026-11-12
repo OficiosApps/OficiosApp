@@ -12,6 +12,11 @@ export function staffMailStatus(env) {
   };
 }
 export const staffMailMessages = {
+  ip_restricted:
+    "Brevo no autoriza la IP de salida de la app. Revisá las IP autorizadas en la seguridad de Brevo. El botón Comprobar conexión muestra la IP rechazada cuando Brevo la informa.",
+  sender_unverified:
+    "Verificá en Brevo el remitente configurado para Oficios antes de enviar invitaciones.",
+  transactional_disabled: "El correo transaccional no está activado en la cuenta de Brevo.",
   smtp_key:
     "La clave cargada es SMTP. Esta conexión necesita una clave API de Brevo: creala en SMTP y API → Claves API y reemplazá BREVO_API_KEY en Railway.",
   not_configured:
@@ -24,6 +29,78 @@ export const staffMailMessages = {
   uncertain:
     "No pudimos confirmar el envío con Brevo. Revisá su registro y la bandeja del destinatario antes de reenviar.",
 };
+async function staffMailFailure(response) {
+  let message = "";
+  try {
+    message = String((await response.json()).message || "").toLowerCase();
+  } catch {}
+  if ([401, 403].includes(response.status) && /(?:\bip\b|ip address)/.test(message)) {
+    const candidate = message.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/)?.[0];
+    const ip =
+      candidate && candidate.split(".").every((part) => Number(part) <= 255) ? candidate : null;
+    return { code: "ip_restricted", ip };
+  }
+  return {
+    code:
+      response.status === 429
+        ? "limit"
+        : response.status >= 500
+          ? "uncertain"
+          : [401, 403].includes(response.status)
+            ? "credentials"
+            : "sender",
+    ip: null,
+  };
+}
+const staffMailChecks = new WeakMap();
+export async function checkStaffMail(env) {
+  const status = staffMailStatus(env);
+  const result = (ready, code, ip = null) => ({
+    ready,
+    code,
+    ip,
+    checkedAt: Date.now(),
+    message: ready
+      ? "Conexión validada desde Railway: remitente verificado y correo transaccional activo. Esta comprobación no envía mensajes ni confirma entregas."
+      : staffMailMessages[code],
+  });
+  if (!status.configured) return result(false, status.issue || "not_configured");
+  const cached = staffMailChecks.get(env);
+  if (cached && cached.checkedAt > Date.now() - 30000) return cached;
+  // No arbitrary hosts or credentials are accepted from the caller.
+  const check = async (endpoint) => {
+    const response = await (env.MAIL_FETCH || fetch)(`https://api.brevo.com/v3/${endpoint}`, {
+      headers: { "api-key": env.BREVO_API_KEY, accept: "application/json" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) return { failure: await staffMailFailure(response) };
+    return { data: await response.json() };
+  };
+  let outcome;
+  try {
+    const senders = await check("senders");
+    if (senders.failure) outcome = result(false, senders.failure.code, senders.failure.ip);
+    else if (
+      !(senders.data.senders || []).some(
+        (sender) => sender.email?.toLowerCase() === status.from.toLowerCase() && sender.active,
+      )
+    )
+      outcome = result(false, "sender_unverified");
+    else {
+      const account = await check("account");
+      outcome = account.failure
+        ? result(false, account.failure.code, account.failure.ip)
+        : result(
+            account.data.relay?.enabled === true,
+            account.data.relay?.enabled === true ? null : "transactional_disabled",
+          );
+    }
+  } catch {
+    outcome = result(false, "uncertain");
+  }
+  staffMailChecks.set(env, outcome);
+  return outcome;
+}
 function staffMailEscape(value) {
   return String(value).replace(
     /[&<>"']/g,
@@ -95,12 +172,7 @@ export async function deliverStaffInvitation(env, invite, origin) {
       }
     } else if (response.status < 500) {
       delivery = "failed";
-      errorCode =
-        response.status === 429
-          ? "limit"
-          : [401, 403].includes(response.status)
-            ? "credentials"
-            : "sender";
+      errorCode = (await staffMailFailure(response)).code;
     }
   } catch {
     // Do not log provider bodies, API keys, invitation URLs or recipient details.

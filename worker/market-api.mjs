@@ -1,4 +1,9 @@
-import { staffMailStatus, staffMailMessages, deliverStaffInvitation } from "./staff-mail.mjs";
+import {
+  staffMailStatus,
+  staffMailMessages,
+  deliverStaffInvitation,
+  checkStaffMail,
+} from "./staff-mail.mjs";
 import {
   MarketError,
   requireMarket,
@@ -478,6 +483,14 @@ export async function handleMarket(request, env) {
     }
     if (path.startsWith("/api/market/staff")) {
       requireMarket(canReview(viewer), "No tenés permisos de administración.", 403);
+      if (path === "/api/market/staff/mail/check" && request.method === "POST") {
+        requireMarket(
+          viewer.staffRole === "ceo",
+          "Sólo el CEO puede comprobar la configuración del correo.",
+          403,
+        );
+        return marketJson(await checkStaffMail(env));
+      }
       if (path === "/api/market/staff" && request.method === "GET") {
         const accounts = await marketRows(
           env.DB.prepare(

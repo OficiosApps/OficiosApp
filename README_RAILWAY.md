@@ -95,7 +95,7 @@ El acceso del equipo está en `/gestion`, separado del alta de clientes y profes
 
 1. Creá una cuenta en Brevo, activá el servicio transaccional y verificá el remitente `pqroficiosapp@gmail.com` con el código que Brevo envía a esa casilla.
 2. Creá una **clave API** (no una clave SMTP) y guardala en Railway como `BREVO_API_KEY`. Configurá `MAIL_FROM` con el correo verificado. Nunca cargues claves en el chat, GitHub o variables VITE_.
-3. Desplegá los cambios. En CEO → Equipo e invitaciones, creá o enviá una invitación pendiente.
+3. Desplegá los cambios. En CEO → Equipo e invitaciones → Correo de la plataforma, pulsá **Comprobar conexión**. La consulta sale desde Railway y valida el remitente y la activación transaccional sin enviar mensajes. Si Brevo rechaza la IP, el panel muestra la dirección cuando el proveedor la informa: revisá ese acceso en las IP autorizadas de Brevo. No autorices una IP de otra sesión de desarrollo para resolver un bloqueo del servidor. Después, creá o enviá una invitación pendiente.
 4. El panel diferencia pendiente, procesando, envío aceptado, rechazo y envío sin confirmar. La aceptación de Brevo **no confirma entrega**: consultá su registro transaccional para rebotes o recepción. Los rechazos y tiempos de espera no se muestran como enviados.
 5. El destinatario abre el enlace del correo, ingresa con el mismo Gmail y pulsa Aceptar invitación. No necesita un perfil de cliente ni una selfie. El enlace dura 7 días y se usa una sola vez.
 

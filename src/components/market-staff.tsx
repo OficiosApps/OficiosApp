@@ -54,6 +54,12 @@ export function StaffWorkspace({ section }: { section: "team" | "reviews" | "met
     [reason, setReason] = useState(""),
     [issue, setIssue] = useState(""),
     [notice, setNotice] = useState(""),
+    [mailCheck, setMailCheck] = useState<{
+      ready: boolean;
+      message: string;
+      ip: string | null;
+    } | null>(null),
+    [checkingMail, setCheckingMail] = useState(false),
     [busy, setBusy] = useState(false);
   async function review(user: any, decision: string) {
     setBusy(true);
@@ -382,6 +388,43 @@ export function StaffWorkspace({ section }: { section: "team" | "reviews" | "met
                 {session.staffRole === "ceo" && (
                   <section className="surface-panel space-y-3 p-6">
                     <h2 className="font-display text-xl font-semibold">Correo de la plataforma</h2>
+                    <Button
+                      variant="outline"
+                      disabled={checkingMail || !data.mail?.configured}
+                      onClick={async () => {
+                        setCheckingMail(true);
+                        setIssue("");
+                        setMailCheck(null);
+                        try {
+                          setMailCheck(
+                            await marketApi("/staff/mail/check", { method: "POST", body: "{}" }),
+                          );
+                        } catch (cause) {
+                          setIssue(
+                            cause instanceof Error
+                              ? cause.message
+                              : "No se pudo comprobar la conexión.",
+                          );
+                        } finally {
+                          setCheckingMail(false);
+                        }
+                      }}
+                    >
+                      {checkingMail ? "Comprobando desde Railway…" : "Comprobar conexión"}
+                    </Button>
+                    {mailCheck && (
+                      <div
+                        role="status"
+                        className={`rounded-xl border p-4 text-sm ${mailCheck.ready ? "border-primary/30 bg-primary/5" : "border-destructive/30 text-destructive"}`}
+                      >
+                        <p>{mailCheck.message}</p>
+                        {mailCheck.ip && (
+                          <p className="mt-2 font-semibold">
+                            IP informada por Brevo: <code>{mailCheck.ip}</code>
+                          </p>
+                        )}
+                      </div>
+                    )}
                     <p className="text-sm text-muted-foreground">
                       Proveedor: Brevo · Remitente: {data.mail?.from || "Sin configurar"} ·{" "}
                       {data.mail?.configured

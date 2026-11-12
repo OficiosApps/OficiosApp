@@ -1300,3 +1300,80 @@ test("team mail leases concurrent sends, checks hierarchy and ownership, and rej
   );
   assert.equal(calls, 1);
 });
+
+test("CEO mail connection check validates the sender and transactional service without sending mail", async () => {
+  const { env } = setup();
+  env.MAIL_FROM = "team@example.test";
+  env.BREVO_API_KEY = "test-private-api-key";
+  const urls = [];
+  env.MAIL_FETCH = async (url, options) => {
+    urls.push(url);
+    assert.equal(options.headers["api-key"], env.BREVO_API_KEY);
+    assert.equal(options.body, undefined);
+    return Response.json(
+      url.endsWith("/senders")
+        ? { senders: [{ email: env.MAIL_FROM, active: true }] }
+        : { relay: { enabled: true } },
+    );
+  };
+  assert.equal((await call(env, "/staff/mail/check", null, {})).status, 403);
+  const invite = await call(env, "/staff/invite", "ceo", { email: "super@example.test" });
+  await call(env, "/invites/accept", "super", { id: invite.data.id });
+  assert.equal((await call(env, "/staff/mail/check", "super", {})).status, 403);
+  urls.length = 0;
+  const checked = await call(env, "/staff/mail/check", "ceo", {});
+  assert.equal(checked.status, 200);
+  assert.equal(checked.data.ready, true);
+  assert.deepEqual(urls, ["https://api.brevo.com/v3/senders", "https://api.brevo.com/v3/account"]);
+  assert.ok(!JSON.stringify(checked.data).includes(env.BREVO_API_KEY));
+  await call(env, "/staff/mail/check", "ceo", {});
+  assert.equal(urls.length, 2, "Checks have a short cache");
+});
+
+test("mail connection check reports the rejected server IP but never provider bodies or secrets", async () => {
+  const { env, db } = setup();
+  env.MAIL_FROM = "team@example.test";
+  env.BREVO_API_KEY = "test-private-api-key";
+  env.MAIL_FETCH = async () =>
+    Response.json(
+      {
+        code: "unauthorized",
+        message:
+          "We have detected you are using an unrecognised IP address 203.0.113.42. Sensitive details: " +
+          env.BREVO_API_KEY,
+      },
+      { status: 401 },
+    );
+  const checked = await call(env, "/staff/mail/check", "ceo", {});
+  assert.equal(checked.data.ready, false);
+  assert.equal(checked.data.code, "ip_restricted");
+  assert.equal(checked.data.ip, "203.0.113.42");
+  assert.ok(!JSON.stringify(checked.data).includes(env.BREVO_API_KEY));
+  const invitation = await call(env, "/staff/invite", "ceo", { email: "super@example.test" });
+  assert.equal(invitation.data.delivery.status, "failed");
+  assert.equal(
+    db.prepare("SELECT delivery_error FROM staff_invites WHERE id = ?").get(invitation.data.id)
+      .delivery_error,
+    "ip_restricted",
+  );
+});
+
+test("mail connection check distinguishes an unverified sender and a disabled transactional service", async () => {
+  for (const [active, enabled, expected] of [
+    [false, true, "sender_unverified"],
+    [true, false, "transactional_disabled"],
+  ]) {
+    const { env } = setup();
+    env.MAIL_FROM = "team@example.test";
+    env.BREVO_API_KEY = "test-only";
+    env.MAIL_FETCH = async (url) =>
+      Response.json(
+        url.endsWith("/senders")
+          ? { senders: [{ email: env.MAIL_FROM, active }] }
+          : { relay: { enabled } },
+      );
+    const response = await call(env, "/staff/mail/check", "ceo", {});
+    assert.equal(response.data.ready, false);
+    assert.equal(response.data.code, expected);
+  }
+});
