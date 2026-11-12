@@ -71,6 +71,7 @@ export function SiteFooter() {
             </li>
           </ul>
           <div className="mt-5 flex flex-wrap gap-4 text-xs text-muted-foreground">
+            <Link to="/gestion">Acceso al equipo</Link>
             <Link to="/privacidad">Privacidad</Link>
             <Link to="/condiciones">Términos y condiciones</Link>
             <a href="mailto:pqroficiosapp@gmail.com?subject=Reclamo%20por%20servicio%20en%20Oficios">

@@ -1,0 +1,113 @@
+// Only transactional team invitations. Provider credentials never reach the browser.
+export function staffMailStatus(env) {
+  const from = (env.MAIL_FROM || "").trim();
+  return {
+    configured: Boolean(env.BREVO_API_KEY && /^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(from)),
+    provider: "Brevo",
+    from: from || null,
+  };
+}
+export const staffMailMessages = {
+  not_configured:
+    "El correo todavía no está activado. La invitación quedó guardada. Configurá BREVO_API_KEY y verificá el remitente en Brevo para enviarla.",
+  credentials:
+    "Brevo rechazó la conexión. Revisá la clave API y la activación del correo transaccional.",
+  sender:
+    "Brevo rechazó el envío. Revisá que el remitente esté verificado y la cuenta habilitada para correo transaccional.",
+  limit: "El proveedor alcanzó un límite de envío. Revisá el cupo de Brevo antes de reintentar.",
+  uncertain:
+    "No pudimos confirmar el envío con Brevo. Revisá su registro y la bandeja del destinatario antes de reenviar.",
+};
+function staffMailEscape(value) {
+  return String(value).replace(
+    /[&<>"']/g,
+    (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char],
+  );
+}
+export async function deliverStaffInvitation(env, invite, origin) {
+  const status = staffMailStatus(env);
+  if (!status.configured) {
+    await env.DB.prepare(
+      "UPDATE staff_invites SET delivery_error = 'not_configured' WHERE id = ? AND delivery_status != 'sending'",
+    )
+      .bind(invite.id)
+      .run();
+    return { status: "pending", message: staffMailMessages.not_configured };
+  }
+  const now = Date.now();
+  // Atomic lease prevents double clicks/concurrent requests from sending the same attempt twice.
+  const claim = await env.DB.prepare(
+    "UPDATE staff_invites SET delivery_status = 'sending', delivery_attempts = delivery_attempts + 1, delivery_attempted_at = ?, delivery_error = NULL WHERE id = ? AND used_by IS NULL AND expires_at > ? AND (delivery_attempted_at IS NULL OR delivery_attempted_at < ?) AND (delivery_status != 'sending' OR delivery_attempted_at < ?)",
+  )
+    .bind(now, invite.id, now, now - 60000, now - 120000)
+    .run();
+  if (!claim.meta.changes)
+    return {
+      status: invite.delivery_status,
+      message:
+        "La invitación ya se está procesando o se intentó enviar hace menos de un minuto. Actualizá el estado antes de reenviar.",
+    };
+  const claimed = await env.DB.prepare("SELECT delivery_attempts FROM staff_invites WHERE id = ?")
+    .bind(invite.id)
+    .first();
+  const attempt = claimed.delivery_attempts;
+  const role = invite.role === "superadmin" ? "superadministrador" : "administrador";
+  const url = new URL("/gestion", origin);
+  url.searchParams.set("invitacion", invite.id);
+  const link = url.href;
+  const text = `Te invitaron al equipo de Oficios como ${role}.\n\nAceptá la invitación: ${link}\n\nIngresá con Google usando ${invite.email}. El enlace vence a los 7 días de su creación y sólo sirve para ese correo. No necesitás crear un perfil de cliente ni cargar una selfie para entrar al equipo.\n\nSi no esperabas esta invitación, podés ignorarla.\nOficios`;
+  let delivery = "uncertain",
+    errorCode = "uncertain",
+    providerId = null;
+  try {
+    const response = await (env.MAIL_FETCH || fetch)("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        "api-key": env.BREVO_API_KEY,
+        "content-type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify({
+        sender: { name: "Oficios", email: status.from },
+        replyTo: { name: "Oficios", email: status.from },
+        to: [{ email: invite.email }],
+        subject: `Tu invitación como ${role} en Oficios`,
+        textContent: text,
+        htmlContent: `<html lang="es"><body style="margin:0;background:#f5f5ef;font-family:Arial,sans-serif;color:#15352e"><main style="max-width:560px;margin:32px auto;background:white;padding:32px;border-radius:16px"><h2>Oficios · Equipo</h2><h1>Te invitamos a formar parte</h1><p>Tu acceso será de <strong>${role}</strong>.</p><p>Ingresá con Google usando <strong>${staffMailEscape(invite.email)}</strong> y aceptá la invitación.</p><p style="margin:32px 0"><a href="${staffMailEscape(link)}" style="background:#065f46;color:white;padding:14px 22px;text-decoration:none;border-radius:8px">Aceptar invitación</a></p><p>El enlace vence a los 7 días de su creación. No necesitás crear un perfil de cliente.</p><p>Si el botón no funciona: ${staffMailEscape(link)}</p><p style="font-size:12px;color:#60756d">Si no esperabas esta invitación, podés ignorarla.</p></main></body></html>`,
+        headers: { IdempotencyKey: `oficios-invite-${invite.id}-${attempt}` },
+        tags: ["staff-invitation"],
+      }),
+      signal: AbortSignal.timeout(12000),
+    });
+    if (response.ok) {
+      const body = await response.json();
+      if (typeof body.messageId === "string" && body.messageId.length <= 500) {
+        delivery = "sent";
+        errorCode = null;
+        providerId = body.messageId;
+      }
+    } else if (response.status < 500) {
+      delivery = "failed";
+      errorCode =
+        response.status === 429
+          ? "limit"
+          : [401, 403].includes(response.status)
+            ? "credentials"
+            : "sender";
+    }
+  } catch {
+    // Do not log provider bodies, API keys, invitation URLs or recipient details.
+  }
+  await env.DB.prepare(
+    "UPDATE staff_invites SET delivery_status = ?, delivery_error = ?, delivery_provider_id = ?, delivery_sent_at = CASE WHEN ? = 'sent' THEN ? ELSE delivery_sent_at END WHERE id = ? AND delivery_attempts = ?",
+  )
+    .bind(delivery, errorCode, providerId, delivery, now, invite.id, attempt)
+    .run();
+  return {
+    status: delivery,
+    message:
+      delivery === "sent"
+        ? "Brevo aceptó el correo para envío. Podés consultar su recepción en el registro de Brevo."
+        : staffMailMessages[errorCode],
+  };
+}

@@ -56,6 +56,8 @@ En Railway > servicio > Variables cargá:
 | GOOGLE_CLIENT_SECRET | El secreto del cliente, privado |
 | OFICIOS_CEO_EMAIL | tadeoacua22@gmail.com |
 | OPENAI_API_KEY | Opcional, sólo para activar Ayuda IA; secreto del servidor |
+| BREVO_API_KEY | Clave API privada de Brevo para enviar invitaciones |
+| MAIL_FROM | pqroficiosapp@gmail.com, verificado como remitente en Brevo |
 | OPENAI_MODEL | gpt-4.1-mini, o un modelo compatible al que tengas acceso |
 
 Railway gestiona PORT. RAILWAY_PUBLIC_DOMAIN se usa como alternativa si no definís APP_URL. No uses VITE_ para secretos. Sin la clave de OpenAI funcionan la aplicación y los mensajes entre usuarios; Ayuda IA informa que necesita activación. La facturación automática de los planes profesionales sigue deshabilitada.
@@ -82,10 +84,26 @@ Esta entrega arranca con una base nueva. No importa automáticamente los registr
 
 1. Abrí /healthz: debe responder {"ok":true}.
 2. Abrí Mi cuenta: debe mostrar Continuar con Google.
-3. Ingresá con tadeoacua22@gmail.com y abrí /ceo. No hace falta crear antes una cuenta de cliente para entrar a la gestión.
+3. En el pie del sitio elegí **Acceso al equipo** e ingresá con tadeoacua22@gmail.com. Se abre el panel CEO automáticamente. No hace falta crear antes una cuenta de cliente para entrar a la gestión.
 4. Con otra cuenta, comprobá que /ceo queda restringido.
 5. Probá alta de cliente con selfie, alta profesional con foto, DNI y selfie, revisión por otra persona autorizada, pedidos, presupuestos y mensajes. Nadie puede aprobar su propia identidad.
 6. Reiniciá o desplegá nuevamente y verificá que persistan los registros y las fotos.
+
+### Invitaciones y correo
+
+El acceso del equipo está en `/gestion`, separado del alta de clientes y profesionales. La cuenta CEO ve dirección, configuración comercial, mapa, auditoría, operación y su equipo. Los superadministradores tienen un panel de supervisión y pueden invitar administradores. Los administradores tienen su centro de operaciones y revisiones, sin invitaciones ni ajustes comerciales.
+
+1. Creá una cuenta en Brevo, activá el servicio transaccional y verificá el remitente `pqroficiosapp@gmail.com` con el código que Brevo envía a esa casilla.
+2. Creá una **clave API** (no una clave SMTP) y guardala en Railway como `BREVO_API_KEY`. Configurá `MAIL_FROM` con el correo verificado. Nunca cargues claves en el chat, GitHub o variables VITE_.
+3. Desplegá los cambios. En CEO → Equipo e invitaciones, creá o enviá una invitación pendiente.
+4. El panel diferencia pendiente, procesando, envío aceptado, rechazo y envío sin confirmar. La aceptación de Brevo **no confirma entrega**: consultá su registro transaccional para rebotes o recepción. Los rechazos y tiempos de espera no se muestran como enviados.
+5. El destinatario abre el enlace del correo, ingresa con el mismo Gmail y pulsa Aceptar invitación. No necesita un perfil de cliente ni una selfie. El enlace dura 7 días y se usa una sola vez.
+
+Las invitaciones anteriores quedan pendientes de envío. No se reenvían automáticamente. El botón Enviar correo permite enviarlas conservando su vigencia. Si vencen, creá otra. Cada intento usa una reserva atómica; los reintentos tienen una espera mínima de un minuto. Ante un envío sin confirmar, comprobá el registro antes de reenviar: puede haberse recibido. No hay cola automática ni confirmación de entrega por webhook.
+
+El remitente puede ser temporalmente sustituido por Brevo al usar Gmail; el Reply-To apunta al correo configurado. Para una dirección de envío de tu marca, usá un dominio propio autenticado. Las credenciales de Google para iniciar sesión son independientes de las de correo.
+
+Referencias: [API transaccional de Brevo](https://developers.brevo.com/reference/send-transac-email), [verificar remitentes](https://help.brevo.com/hc/en-us/articles/208836149-Create-a-new-sender-From-name-and-From-email), [salida de correo en Railway](https://docs.railway.com/networking/outbound-networking).
 
 ## 7. PWA en iPhone desde Railway
 

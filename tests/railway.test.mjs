@@ -70,7 +70,7 @@ async function flow(auth) {
 test("Railway seed is idempotent, persists files/configuration and does not fabricate accounts", async (t) => {
   const { directory, storage } = await fixture(t);
   const { sqlite, DB, BUCKET } = storage;
-  assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM railway_migrations").get().n, 4);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM railway_migrations").get().n, 5);
   assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM accounts").get().n, 0);
   assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM staff").get().n, 0);
   sqlite

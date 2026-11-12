@@ -30,6 +30,7 @@ export function createApplication({
   storage: suppliedStorage,
   googleKeys,
   oauthFetch,
+  mailFetch,
 } = {}) {
   if (environment.RAILWAY_ENVIRONMENT_ID && !environment.RAILWAY_VOLUME_MOUNT_PATH)
     throw new Error("Agregá un volumen de Railway con punto de montaje /data antes de iniciar.");
@@ -51,6 +52,9 @@ export function createApplication({
     DB: storage.DB,
     BUCKET: storage.BUCKET,
     OFICIOS_CEO_EMAIL: environment.OFICIOS_CEO_EMAIL || "",
+    BREVO_API_KEY: environment.BREVO_API_KEY || "",
+    MAIL_FROM: environment.MAIL_FROM || "",
+    ...(mailFetch ? { MAIL_FETCH: mailFetch } : {}),
     OPENAI_API_KEY: environment.OPENAI_API_KEY || "",
     OPENAI_MODEL: environment.OPENAI_MODEL || "gpt-4.1-mini",
   };

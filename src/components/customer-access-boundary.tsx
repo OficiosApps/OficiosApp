@@ -1,4 +1,5 @@
-import { Link, Outlet, useLocation } from "@tanstack/react-router";
+import { managementHome } from "@/lib/management-access";
+import { Link, Navigate, Outlet, useLocation } from "@tanstack/react-router";
 import { isInternalPath } from "@/lib/customer-access.js";
 import { useMarket } from "@/hooks/use-market";
 import { MarketLayout, MarketNotice, MarketErrorText } from "@/components/market-common";
@@ -37,7 +38,11 @@ export function CustomerAccessBoundary() {
     session.staffRole &&
     (!pathname.startsWith("/superadmin") || session.staffRole !== "admin")
   )
-    return <LiveStaffPanel />;
+    return pathname !== managementHome(session.staffRole) ? (
+      <Navigate to={managementHome(session.staffRole)!} replace />
+    ) : (
+      <LiveStaffPanel />
+    );
   if (
     !staff &&
     session.account &&

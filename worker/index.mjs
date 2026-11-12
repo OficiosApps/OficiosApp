@@ -39,7 +39,7 @@ export default {
       return new Response(
         request.method === "HEAD"
           ? null
-          : `<!doctype html><html lang="es-AR"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Acceso restringido | Oficios</title><body style="margin:0;background:#fbfaf5;color:#16332d;font-family:system-ui;display:grid;place-items:center;min-height:100vh"><main style="max-width:32rem;padding:2rem;text-align:center"><h1>Acceso restringido</h1><p>Ingresá con una cuenta que tenga permiso para este espacio.</p><a href="/cuenta" style="display:inline-block;margin-top:1rem;color:#005f48">Ir a mi cuenta</a></main></body></html>`,
+          : `<!doctype html><html lang="es-AR"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Acceso restringido | Oficios</title><body style="margin:0;background:#fbfaf5;color:#16332d;font-family:system-ui;display:grid;place-items:center;min-height:100vh"><main style="max-width:32rem;padding:2rem;text-align:center"><h1>Acceso restringido</h1><p>Ingresá con una cuenta que tenga permiso para este espacio.</p><a href="${/^\/(ceo|admin|superadmin|equipo)(\/|$)/.test(pathname) ? "/gestion" : "/cuenta"}" style="display:inline-block;margin-top:1rem;color:#005f48">Ingresar a mi espacio</a></main></body></html>`,
         {
           status: 403,
           headers: {
@@ -68,7 +68,8 @@ export default {
           ? "public, max-age=31536000, immutable"
           : "no-cache",
       "x-content-type-options": "nosniff",
-      "referrer-policy": "strict-origin-when-cross-origin",
+      "referrer-policy":
+        pathname === "/gestion" ? "no-referrer" : "strict-origin-when-cross-origin",
     };
     if (pathname === "/sw.js") headers["service-worker-allowed"] = "/";
     const bytes =

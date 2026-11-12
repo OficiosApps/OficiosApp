@@ -1,12 +1,13 @@
+import { ManagementLayout } from "@/components/management-layout";
+import { StaffWorkspace } from "@/components/market-staff";
 import { toast } from "sonner";
 import { useEffect, useState } from "react";
-import { Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { MarketLayout, MarketNotice, MarketErrorText } from "@/components/market-common";
+import { MarketNotice, MarketErrorText } from "@/components/market-common";
 import { OrdersMap } from "@/components/orders-map";
 import { useRemote } from "@/hooks/use-market";
 import { marketApi, marketStates } from "@/lib/market-client";
@@ -33,14 +34,8 @@ type MapOrder = {
 export function LiveCeoPanel() {
   const { data, loading, error, refresh } = useRemote<CeoData>("/ceo/config");
   return (
-    <MarketLayout
-      title="Panel de CEO"
-      subtitle="Gestioná los planes, los referidos, la apertura de zonas y la ubicación de los pedidos."
-    >
+    <ManagementLayout>
       <div className="mb-7 flex flex-wrap gap-3">
-        <Button asChild variant="outline" size="sm">
-          <Link to="/admin">Revisar identidades y equipo</Link>
-        </Button>
         <Button variant="outline" size="sm" onClick={() => void refresh()}>
           Actualizar panel
         </Button>
@@ -71,8 +66,17 @@ export function LiveCeoPanel() {
               <TabsList className="h-auto flex-wrap justify-start gap-1">
                 <TabsTrigger value="mapa">Mapa de pedidos</TabsTrigger>
                 <TabsTrigger value="gestion">Planes, referidos y zonas</TabsTrigger>
+                <TabsTrigger value="equipo">Equipo e invitaciones</TabsTrigger>
+                <TabsTrigger value="operacion">Operación</TabsTrigger>
                 <TabsTrigger value="historial">Historial de cambios</TabsTrigger>
               </TabsList>
+              <TabsContent value="equipo" className="mt-6">
+                <StaffWorkspace section="team" />
+              </TabsContent>
+              <TabsContent value="operacion" className="mt-6 space-y-8">
+                <StaffWorkspace section="metrics" />
+                <StaffWorkspace section="reviews" />
+              </TabsContent>
               <TabsContent value="mapa" className="mt-6">
                 <CeoOrdersMap regions={data.config.regions} />
               </TabsContent>
@@ -112,7 +116,7 @@ export function LiveCeoPanel() {
           </>
         )
       )}
-    </MarketLayout>
+    </ManagementLayout>
   );
 }
 function CommercialEditor({ data, onSaved }: { data: CeoData; onSaved: () => Promise<void> }) {

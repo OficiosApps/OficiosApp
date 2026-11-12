@@ -1,3 +1,4 @@
+import { staffMailStatus, staffMailMessages, deliverStaffInvitation } from "./staff-mail.mjs";
 import {
   MarketError,
   requireMarket,
@@ -511,12 +512,22 @@ export async function handleMarket(request, env) {
             cancelled: jobs.filter((j) => j.state === "cancelado").length,
             returning: [...counts.values()].filter((n) => n > 1).length,
           },
+          mail: viewer.staffRole === "admin" ? null : staffMailStatus(env),
+          team:
+            viewer.staffRole === "admin"
+              ? []
+              : await marketRows(
+                  env.DB.prepare(
+                    "SELECT s.user_id,s.role,s.created_at,(SELECT i.email FROM staff_invites i WHERE i.used_by = s.user_id ORDER BY i.created_at DESC LIMIT 1) AS email FROM staff s WHERE s.invited_by = ? ORDER BY s.created_at DESC LIMIT 100",
+                  ).bind(viewer.identity.id),
+                ),
+          deliveryMessages: viewer.staffRole === "admin" ? null : staffMailMessages,
           invites:
             viewer.staffRole === "admin"
               ? []
               : await marketRows(
                   env.DB.prepare(
-                    "SELECT id,email,role,expires_at,used_by FROM staff_invites WHERE invited_by = ? ORDER BY created_at DESC LIMIT 50",
+                    "SELECT id,email,role,expires_at,used_by,delivery_status,delivery_attempts,delivery_attempted_at,delivery_sent_at,delivery_error FROM staff_invites WHERE invited_by = ? ORDER BY created_at DESC LIMIT 50",
                   ).bind(viewer.identity.id),
                 ),
         });
@@ -533,14 +544,75 @@ export async function handleMarket(request, env) {
         const email = marketText(data.email, 3, 200).toLowerCase();
         requireMarket(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email), "Ingresá un correo válido.");
         requireMarket(email !== viewer.identity.email, "Invitá a otra persona.");
-        const id = crypto.randomUUID(),
-          now = Date.now();
-        await env.DB.prepare(
-          "INSERT INTO staff_invites (id,email,role,invited_by,expires_at,created_at) VALUES (?,?,?,?,?,?)",
+        requireMarket(
+          email !== (env.OFICIOS_CEO_EMAIL || "").trim().toLowerCase(),
+          "Esa cuenta ya tiene acceso CEO.",
+        );
+        const existingStaff = await env.DB.prepare(
+          "SELECT s.role FROM staff s JOIN staff_invites i ON i.used_by = s.user_id WHERE i.email = ? LIMIT 1",
         )
-          .bind(id, email, role, viewer.identity.id, now + 7 * 86400000, now)
-          .run();
-        return marketJson({ id, role }, 201);
+          .bind(email)
+          .first();
+        requireMarket(!existingStaff, "Esa persona ya forma parte del equipo.", 409);
+        const now = Date.now();
+        const recent = await env.DB.prepare(
+          "SELECT COUNT(*) AS total FROM staff_invites WHERE invited_by = ? AND created_at > ?",
+        )
+          .bind(viewer.identity.id, now - 3600000)
+          .first();
+        requireMarket(
+          recent.total < 30,
+          "Alcanzaste el límite de 30 invitaciones por hora. Intentá más tarde.",
+          429,
+        );
+        let invite = await env.DB.prepare(
+          "SELECT * FROM staff_invites WHERE invited_by = ? AND email = ? AND role = ? AND used_by IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1",
+        )
+          .bind(viewer.identity.id, email, role, now)
+          .first();
+        const created = !invite;
+        if (!invite) {
+          const id = crypto.randomUUID();
+          await env.DB.prepare(
+            "INSERT INTO staff_invites (id,email,role,invited_by,expires_at,created_at) VALUES (?,?,?,?,?,?)",
+          )
+            .bind(id, email, role, viewer.identity.id, now + 7 * 86400000, now)
+            .run();
+          invite = await env.DB.prepare("SELECT * FROM staff_invites WHERE id = ?")
+            .bind(id)
+            .first();
+        }
+        const delivery = await deliverStaffInvitation(env, invite, url.origin);
+        return marketJson({ id: invite.id, role, delivery }, created ? 201 : 200);
+      }
+      if (path === "/api/market/staff/invite/resend" && request.method === "POST") {
+        requireMarket(
+          ["ceo", "superadmin"].includes(viewer.staffRole),
+          "No podés reenviar invitaciones.",
+          403,
+        );
+        const data = await marketBody(request);
+        const invite = await env.DB.prepare(
+          "SELECT * FROM staff_invites WHERE id = ? AND invited_by = ?",
+        )
+          .bind(data.id, viewer.identity.id)
+          .first();
+        const allowedRole = viewer.staffRole === "ceo" ? "superadmin" : "admin";
+        requireMarket(
+          invite && invite.role === allowedRole,
+          "No tenés permiso sobre esta invitación.",
+          403,
+        );
+        requireMarket(
+          !invite.used_by && invite.expires_at > Date.now(),
+          "La invitación ya se aceptó o venció.",
+          409,
+        );
+        return marketJson({
+          id: invite.id,
+          role: invite.role,
+          delivery: await deliverStaffInvitation(env, invite, url.origin),
+        });
       }
       if (path === "/api/market/staff/review" && request.method === "POST") {
         const data = await marketBody(request);

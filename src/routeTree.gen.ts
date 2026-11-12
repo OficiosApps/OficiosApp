@@ -16,6 +16,7 @@ import { Route as ComoFuncionaRouteImport } from './routes/como-funciona'
 import { Route as CondicionesRouteImport } from './routes/condiciones'
 import { Route as CuentaRouteImport } from './routes/cuenta'
 import { Route as EquipoRouteImport } from './routes/equipo'
+import { Route as GestionRouteImport } from './routes/gestion'
 import { Route as MetodosDePagoRouteImport } from './routes/metodos-de-pago'
 import { Route as MisDireccionesRouteImport } from './routes/mis-direcciones'
 import { Route as MisProfesionalesRouteImport } from './routes/mis-profesionales'
@@ -65,6 +66,11 @@ const CuentaRoute = CuentaRouteImport.update({
 const EquipoRoute = EquipoRouteImport.update({
   id: '/equipo',
   path: '/equipo',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const GestionRoute = GestionRouteImport.update({
+  id: '/gestion',
+  path: '/gestion',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MetodosDePagoRoute = MetodosDePagoRouteImport.update({
@@ -151,6 +157,7 @@ export interface FileRoutesByFullPath {
   '/condiciones': typeof CondicionesRoute
   '/cuenta': typeof CuentaRoute
   '/equipo': typeof EquipoRoute
+  '/gestion': typeof GestionRoute
   '/metodos-de-pago': typeof MetodosDePagoRoute
   '/mis-direcciones': typeof MisDireccionesRoute
   '/mis-profesionales': typeof MisProfesionalesRoute
@@ -175,6 +182,7 @@ export interface FileRoutesByTo {
   '/condiciones': typeof CondicionesRoute
   '/cuenta': typeof CuentaRoute
   '/equipo': typeof EquipoRoute
+  '/gestion': typeof GestionRoute
   '/metodos-de-pago': typeof MetodosDePagoRoute
   '/mis-direcciones': typeof MisDireccionesRoute
   '/mis-profesionales': typeof MisProfesionalesRoute
@@ -200,6 +208,7 @@ export interface FileRoutesById {
   '/condiciones': typeof CondicionesRoute
   '/cuenta': typeof CuentaRoute
   '/equipo': typeof EquipoRoute
+  '/gestion': typeof GestionRoute
   '/metodos-de-pago': typeof MetodosDePagoRoute
   '/mis-direcciones': typeof MisDireccionesRoute
   '/mis-profesionales': typeof MisProfesionalesRoute
@@ -226,6 +235,7 @@ export interface FileRouteTypes {
     | '/condiciones'
     | '/cuenta'
     | '/equipo'
+    | '/gestion'
     | '/metodos-de-pago'
     | '/mis-direcciones'
     | '/mis-profesionales'
@@ -250,6 +260,7 @@ export interface FileRouteTypes {
     | '/condiciones'
     | '/cuenta'
     | '/equipo'
+    | '/gestion'
     | '/metodos-de-pago'
     | '/mis-direcciones'
     | '/mis-profesionales'
@@ -274,6 +285,7 @@ export interface FileRouteTypes {
     | '/condiciones'
     | '/cuenta'
     | '/equipo'
+    | '/gestion'
     | '/metodos-de-pago'
     | '/mis-direcciones'
     | '/mis-profesionales'
@@ -299,6 +311,7 @@ export interface RootRouteChildren {
   CondicionesRoute: typeof CondicionesRoute
   CuentaRoute: typeof CuentaRoute
   EquipoRoute: typeof EquipoRoute
+  GestionRoute: typeof GestionRoute
   MetodosDePagoRoute: typeof MetodosDePagoRoute
   MisDireccionesRoute: typeof MisDireccionesRoute
   MisProfesionalesRoute: typeof MisProfesionalesRoute
@@ -365,6 +378,13 @@ declare module '@tanstack/react-router' {
       path: '/equipo'
       fullPath: '/equipo'
       preLoaderRoute: typeof EquipoRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/gestion': {
+      id: '/gestion'
+      path: '/gestion'
+      fullPath: '/gestion'
+      preLoaderRoute: typeof GestionRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/metodos-de-pago': {
@@ -483,6 +503,7 @@ const rootRouteChildren: RootRouteChildren = {
   CondicionesRoute: CondicionesRoute,
   CuentaRoute: CuentaRoute,
   EquipoRoute: EquipoRoute,
+  GestionRoute: GestionRoute,
   MetodosDePagoRoute: MetodosDePagoRoute,
   MisDireccionesRoute: MisDireccionesRoute,
   MisProfesionalesRoute: MisProfesionalesRoute,

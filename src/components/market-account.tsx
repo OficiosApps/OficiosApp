@@ -79,9 +79,7 @@ export function MarketAccountPage({
             Ingresaste con una cuenta autorizada. Este acceso sólo aparece dentro de tu cuenta.
           </p>
           <Button asChild variant="outline">
-            <Link to={session.staffRole === "ceo" ? "/ceo" : "/admin"}>
-              Entrar a la gestión de Oficios
-            </Link>
+            <Link to="/gestion">Entrar a la gestión de Oficios</Link>
           </Button>
         </section>
       )}

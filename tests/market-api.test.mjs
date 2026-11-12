@@ -1161,3 +1161,125 @@ test("replacing a client selfie resets manual review and stale submissions canno
     .get().n;
   assert.equal(unclaimed, 1);
 });
+
+test("team mail saves unsent invitations honestly and can send them after provider configuration", async () => {
+  const { env, db } = setup();
+  const created = await call(env, "/staff/invite", "ceo", { email: "super@example.test" });
+  assert.equal(created.status, 201);
+  assert.equal(created.data.delivery.status, "pending");
+  assert.match(created.data.delivery.message, /no está activado/);
+  assert.equal(
+    db.prepare("SELECT delivery_attempts FROM staff_invites WHERE id = ?").get(created.data.id)
+      .delivery_attempts,
+    0,
+  );
+  const duplicate = await call(env, "/staff/invite", "ceo", { email: "super@example.test" });
+  assert.equal(duplicate.data.id, created.data.id);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM staff_invites").get().n, 1);
+  const requests = [];
+  env.MAIL_FROM = "pqroficiosapp@gmail.com";
+  env.BREVO_API_KEY = "test-secret-not-for-browser";
+  env.MAIL_FETCH = async (url, options) => {
+    requests.push({ url, options });
+    return Response.json({ messageId: "<accepted@provider.test>" }, { status: 201 });
+  };
+  const sent = await call(env, "/staff/invite/resend", "ceo", { id: created.data.id });
+  assert.equal(sent.data.delivery.status, "sent");
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "https://api.brevo.com/v3/smtp/email");
+  assert.equal(requests[0].options.headers["api-key"], env.BREVO_API_KEY);
+  const email = JSON.parse(requests[0].options.body);
+  assert.deepEqual(email.to, [{ email: "super@example.test" }]);
+  assert.equal(email.sender.email, env.MAIL_FROM);
+  assert.equal(email.replyTo.email, env.MAIL_FROM);
+  assert.match(email.textContent, new RegExp(origin + "/gestion\\?invitacion=" + created.data.id));
+  assert.match(email.subject, /superadministrador/);
+  assert.ok(!email.textContent.includes(env.BREVO_API_KEY));
+  const row = db.prepare("SELECT * FROM staff_invites WHERE id = ?").get(created.data.id);
+  assert.equal(row.delivery_status, "sent");
+  assert.equal(row.delivery_provider_id, "<accepted@provider.test>");
+  assert.ok(row.delivery_sent_at);
+  const dashboard = await call(env, "/staff", "ceo");
+  assert.equal(dashboard.data.mail.configured, true);
+  assert.ok(!JSON.stringify(dashboard.data).includes(env.BREVO_API_KEY));
+  assert.equal(dashboard.data.invites[0].delivery_status, "sent");
+  await call(env, "/invites/accept", "super", { id: created.data.id });
+  assert.equal((await call(env, "/session", "super")).data.account, null);
+  assert.equal((await call(env, "/staff", "ceo")).data.team[0].email, "super@example.test");
+  assert.equal(
+    (await call(env, "/staff/invite/resend", "ceo", { id: created.data.id })).status,
+    409,
+  );
+  assert.equal(
+    (await call(env, "/staff/invite/resend", "super", { id: created.data.id })).status,
+    403,
+  );
+});
+
+test("team mail classifies provider rejection and uncertain delivery without leaking provider data", async () => {
+  for (const [status, expected, code] of [
+    [401, "failed", "credentials"],
+    [403, "failed", "credentials"],
+    [400, "failed", "sender"],
+    [429, "failed", "limit"],
+    [503, "uncertain", "uncertain"],
+    [0, "uncertain", "uncertain"],
+  ]) {
+    const { env, db } = setup();
+    env.BREVO_API_KEY = "private-mail-api-key";
+    env.MAIL_FROM = "team@example.test";
+    env.MAIL_FETCH = async () => {
+      if (!status) throw new Error("timeout with private data");
+      return new Response("private provider data", { status });
+    };
+    const result = await call(env, "/staff/invite", "ceo", { email: "super@example.test" });
+    assert.equal(result.status, 201);
+    assert.equal(result.data.delivery.status, expected);
+    assert.ok(!JSON.stringify(result.data).includes("private"));
+    assert.equal(db.prepare("SELECT delivery_error FROM staff_invites").get().delivery_error, code);
+    // Immediate retries do not produce more external calls.
+    const retry = await call(env, "/staff/invite/resend", "ceo", { id: result.data.id });
+    assert.match(retry.data.delivery.message, /menos de un minuto/);
+    assert.equal(
+      db.prepare("SELECT delivery_attempts FROM staff_invites").get().delivery_attempts,
+      1,
+    );
+  }
+});
+
+test("team mail leases concurrent sends, checks hierarchy and ownership, and rejects expired invitations", async () => {
+  const { env, db } = setup();
+  const invite = await call(env, "/staff/invite", "ceo", { email: "super@example.test" });
+  env.BREVO_API_KEY = "test-only";
+  env.MAIL_FROM = "team@example.test";
+  let release;
+  let calls = 0;
+  env.MAIL_FETCH = async () => {
+    calls++;
+    await new Promise((resolve) => {
+      release = resolve;
+    });
+    return Response.json({ messageId: "accepted" }, { status: 201 });
+  };
+  const first = call(env, "/staff/invite/resend", "ceo", { id: invite.data.id });
+  while (!release) await new Promise((resolve) => setImmediate(resolve));
+  const second = await call(env, "/staff/invite/resend", "ceo", { id: invite.data.id });
+  assert.equal(second.data.delivery.status, "sending");
+  assert.equal(calls, 1);
+  release();
+  assert.equal((await first).data.delivery.status, "sent");
+  assert.equal(
+    (await call(env, "/staff/invite/resend", "client", { id: invite.data.id })).status,
+    403,
+  );
+  assert.equal(
+    (await call(env, "/staff/invite", "ceo", { email: "ceo@example.test" })).status,
+    400,
+  );
+  db.prepare("UPDATE staff_invites SET expires_at = 0 WHERE id = ?").run(invite.data.id);
+  assert.equal(
+    (await call(env, "/staff/invite/resend", "ceo", { id: invite.data.id })).status,
+    409,
+  );
+  assert.equal(calls, 1);
+});
