@@ -17,7 +17,7 @@ export const managementRoles = {
   superadmin: {
     label: "Superadministrador",
     title: "Supervisión y equipo",
-    description: "Coordiná a los administradores y seguí la operación de la plataforma.",
+    description: "Coordiná el equipo, la oferta por ciudad y los incidentes de la plataforma.",
     home: "/superadmin",
     color: "bg-blue-950 text-blue-50",
     badge: "bg-blue-200 text-blue-950",
@@ -31,7 +31,8 @@ export const managementRoles = {
   admin: {
     label: "Administrador",
     title: "Centro de operaciones",
-    description: "Revisá las identidades pendientes y acompañá la actividad diaria de Oficios.",
+    description:
+      "Atendé solicitudes, acompañá a los usuarios y resolvé los casos de la operación diaria.",
     home: "/admin",
     color: "bg-amber-950 text-amber-50",
     badge: "bg-amber-200 text-amber-950",

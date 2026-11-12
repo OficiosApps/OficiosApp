@@ -1,3 +1,4 @@
+import { OperationsView, StaffAccessButton } from "@/components/staff-operations";
 import { useState } from "react";
 import { Mail, Users, ClipboardCheck, Activity } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -10,37 +11,42 @@ import { marketApi, fileUrl } from "@/lib/market-client";
 export function LiveStaffPanel() {
   const { session } = useMarket();
   const supervisor = session.staffRole === "superadmin";
+  const [section, setSection] = useState("resumen");
+  const navigation = supervisor
+    ? [
+        { id: "resumen", label: "Panorama general" },
+        { id: "equipo", label: "Mi equipo y accesos" },
+        { id: "casos", label: "Control de incidentes" },
+        { id: "solicitudes", label: "Mesa de solicitudes" },
+        { id: "directorio", label: "Directorio y moderación" },
+        { id: "zonas", label: "Zonas y liquidez" },
+        { id: "revisiones", label: "Supervisar identidades" },
+        { id: "auditoria", label: "Auditoría operativa" },
+        { id: "reglas", label: "Reglas de atención" },
+        { id: "sistema", label: "Estado del sistema" },
+      ]
+    : [
+        { id: "resumen", label: "Mi jornada" },
+        { id: "solicitudes", label: "Mesa de solicitudes" },
+        { id: "casos", label: "Casos y atención" },
+        { id: "profesionales", label: "Profesionales y empresas" },
+        { id: "clientes", label: "Clientes" },
+        { id: "revisiones", label: "Verificaciones" },
+        { id: "zonas", label: "Ciudades y cobertura" },
+      ];
   return (
-    <ManagementLayout>
-      <Tabs defaultValue={supervisor ? "equipo" : "revisiones"}>
-        <TabsList className="h-auto flex-wrap gap-1">
-          {supervisor && (
-            <TabsTrigger value="equipo">
-              <Users className="mr-2 size-4" />
-              Mi equipo
-            </TabsTrigger>
-          )}
-          <TabsTrigger value="revisiones">
-            <ClipboardCheck className="mr-2 size-4" />
-            {supervisor ? "Supervisar revisiones" : "Identidades pendientes"}
-          </TabsTrigger>
-          <TabsTrigger value="actividad">
-            <Activity className="mr-2 size-4" />
-            Actividad
-          </TabsTrigger>
-        </TabsList>
-        {supervisor && (
-          <TabsContent value="equipo" className="mt-6">
-            <StaffWorkspace section="team" />
-          </TabsContent>
-        )}
-        <TabsContent value="revisiones" className="mt-6">
-          <StaffWorkspace section="reviews" />
-        </TabsContent>
-        <TabsContent value="actividad" className="mt-6">
-          <StaffWorkspace section="metrics" />
-        </TabsContent>
-      </Tabs>
+    <ManagementLayout
+      navigation={navigation}
+      activeSection={section.split("?")[0]!}
+      onSectionChange={setSection}
+    >
+      {section === "equipo" ? (
+        <StaffWorkspace section="team" />
+      ) : section === "revisiones" ? (
+        <StaffWorkspace section="reviews" />
+      ) : (
+        <OperationsView key={section} section={section} onSelect={setSection} />
+      )}
     </ManagementLayout>
   );
 }
@@ -384,8 +390,13 @@ export function StaffWorkspace({ section }: { section: "team" | "reviews" | "met
                         <span className="break-all font-medium">{member.email}</span>
                         <span className="text-muted-foreground">
                           {member.role === "superadmin" ? "Superadministrador" : "Administrador"} ·
-                          Activo
+                          {member.access_paused ? "Acceso pausado" : "Activo"}
                         </span>
+                        <p className="w-full text-xs text-muted-foreground">
+                          {member.open_cases || 0} casos abiertos · {member.closed_cases || 0} casos
+                          cerrados asignados
+                        </p>
+                        <StaffAccessButton member={member} onSaved={refresh} />
                       </article>
                     ))
                   )}

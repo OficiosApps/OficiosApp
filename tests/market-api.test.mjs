@@ -1463,3 +1463,497 @@ test("two acceptance requests cannot consume an invitation without its unique st
   );
   assert.equal((await call(env, "/staff", "ceo")).data.team[0].email, "super@example.test");
 });
+
+async function operationsTeam(env) {
+  const supervisor = await call(env, "/staff/invite", "ceo", { email: "super@example.test" });
+  assert.equal(
+    (await call(env, "/invites/accept", "super", { id: supervisor.data.id })).status,
+    200,
+  );
+  for (const user of ["admin", "admin2"]) {
+    const invite = await call(env, "/staff/invite", "super", { email: user + "@example.test" });
+    assert.equal((await call(env, "/invites/accept", user, { id: invite.data.id })).status, 200);
+  }
+}
+const ops = "/staff/operations";
+const caseInput = {
+  title: "Reclamo para atención",
+  description: "El cliente solicita seguimiento del servicio contratado.",
+  category: "reclamo",
+  priority: "media",
+  cityId: "mercedes-ba",
+};
+
+test("operations uses real directory, job cohort, accepted prices and regional liquidity without exposing identity documents", async () => {
+  const { db, env } = setup();
+  await operationsTeam(env);
+  await register(env, "client");
+  await register(env, "pro", "profesional");
+  await attachProfilePhoto(db, env, "pro");
+  db.prepare("UPDATE accounts SET verification='aprobado' WHERE user_id='pro'").run();
+  let job = (await call(env, "/jobs", "client", details)).data.job;
+  job = (
+    await call(env, "/jobs/" + job.id, "pro", { action: "quote", version: job.version, quote })
+  ).data.job;
+  job = (
+    await call(env, "/jobs/" + job.id, "client", {
+      action: "decide-quote",
+      version: job.version,
+      quoteId: job.quotes[0].id,
+      revision: 1,
+      accept: true,
+    })
+  ).data.job;
+  job = (
+    await call(env, "/jobs/" + job.id, "pro", {
+      action: "quote",
+      version: job.version,
+      quote: { ...quote, labor: 900 },
+    })
+  ).data.job;
+  const summary = await call(env, ops + "/summary", "admin");
+  assert.equal(summary.status, 200, JSON.stringify(summary.data));
+  assert.equal(summary.data.totals.requests, 1);
+  assert.equal(summary.data.totals.hired, 1);
+  assert.equal(summary.data.acceptedValue, 16000, "Pending revision never changes accepted totals");
+  assert.equal(summary.data.accounts.clients, 1);
+  assert.equal(summary.data.returning, 0);
+  assert.equal(summary.data.cases.open, 0);
+  for (const user of [null, "client", "pro"])
+    assert.equal((await call(env, ops + "/summary", user)).status, 403);
+  const directory = await call(env, ops + "/accounts?kind=providers", "admin");
+  assert.equal(directory.status, 200);
+  assert.equal(directory.data.items.length, 1);
+  assert.equal(directory.data.items[0].id, "pro");
+  assert.ok(!JSON.stringify(directory.data).includes("identity_json"));
+  assert.ok(!JSON.stringify(directory.data).includes("clientSelfieId"));
+  const jobs = await call(env, ops + "/jobs?q=" + encodeURIComponent("Reparar"), "admin");
+  assert.equal(jobs.data.items.length, 1);
+  assert.equal(jobs.data.items[0].acceptedValue, 16000);
+  const detail = await call(env, ops + "/jobs/" + job.id, "admin");
+  assert.equal(detail.data.job.address, details.address);
+  assert.equal(
+    detail.data.job.messages,
+    undefined,
+    "Private chat is not exported into the operations desk",
+  );
+  const zones = await call(env, ops + "/regions", "super");
+  const mercedes = zones.data.regions.find((r) => r.id === "mercedes-ba");
+  assert.equal(mercedes.clients, 1);
+  assert.equal(mercedes.providers, 1);
+  assert.equal(mercedes.requests, 1);
+  assert.equal((await call(env, "/ceo/config", "super")).status, 403);
+});
+
+test("case queue enforces responsibility, escalation, audited resolution and stale update protection", async () => {
+  const { db, env } = setup();
+  await operationsTeam(env);
+  const created = await call(env, ops + "/cases", "super", caseInput);
+  assert.equal(created.status, 201, JSON.stringify(created.data));
+  const id = created.data.id;
+  let current = (await call(env, ops + "/cases/" + id, "admin")).data.case;
+  assert.equal(current.assignee_id, null);
+  assert.equal(
+    (
+      await call(env, ops + "/cases/" + id, "admin", {
+        action: "resolve",
+        version: current.version,
+        resolution: "Se resolvió el reclamo con el cliente.",
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (await call(env, ops + "/cases/" + id, "admin", { action: "claim", version: current.version }))
+      .status,
+    200,
+  );
+  current = (await call(env, ops + "/cases/" + id, "admin")).data.case;
+  assert.equal(current.assignee_id, "admin");
+  assert.equal((await call(env, ops + "/cases/" + id, "admin2")).status, 403);
+  assert.equal(
+    (
+      await call(env, ops + "/cases/" + id, "admin", {
+        action: "note",
+        version: current.version,
+        note: "Se confirmó la recepción del reclamo.",
+      })
+    ).status,
+    200,
+  );
+  const notesBefore = db.prepare("SELECT COUNT(*) n FROM operations_notes").get().n;
+  const auditBefore = db.prepare("SELECT COUNT(*) n FROM operations_audit").get().n;
+  assert.equal(
+    (
+      await call(env, ops + "/cases/" + id, "admin", {
+        action: "note",
+        version: current.version,
+        note: "Intento con una versión anterior.",
+      })
+    ).status,
+    409,
+  );
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM operations_notes").get().n, notesBefore);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM operations_audit").get().n, auditBefore);
+  current = (await call(env, ops + "/cases/" + id, "admin")).data.case;
+  assert.equal(
+    (
+      await call(env, ops + "/cases/" + id, "admin", {
+        action: "escalate",
+        version: current.version,
+        note: "Se requiere intervención del supervisor.",
+      })
+    ).status,
+    200,
+  );
+  current = (await call(env, ops + "/cases/" + id, "admin")).data.case;
+  assert.equal(current.status, "escalado");
+  assert.equal(
+    (
+      await call(env, ops + "/cases/" + id, "admin", {
+        action: "resolve",
+        version: current.version,
+        resolution: "Cierre sin supervisión no permitido.",
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await call(env, ops + "/cases/" + id, "super", {
+        action: "assign",
+        version: current.version,
+        assigneeId: "admin2",
+        note: "Se reasigna por disponibilidad del equipo.",
+      })
+    ).status,
+    200,
+  );
+  current = (await call(env, ops + "/cases/" + id, "admin2")).data.case;
+  assert.equal(
+    (
+      await call(env, ops + "/cases/" + id, "admin2", {
+        action: "resolve",
+        version: current.version,
+        resolution: "Se acordó y registró la solución con la persona.",
+      })
+    ).status,
+    200,
+  );
+  current = (await call(env, ops + "/cases/" + id, "admin2")).data.case;
+  assert.equal(current.status, "resuelto");
+  assert.ok(current.resolved_at);
+  assert.equal(
+    (
+      await call(env, ops + "/cases/" + id, "admin2", {
+        action: "reopen",
+        version: current.version,
+        note: "El cliente informó que el problema persiste.",
+      })
+    ).status,
+    200,
+  );
+  assert.equal((await call(env, ops + "/cases?mine=1", "admin")).data.items.length, 0);
+  assert.equal((await call(env, ops + "/cases?mine=1", "admin2")).data.items.length, 1);
+  const audit = await call(env, ops + "/audit", "super");
+  assert.equal(audit.status, 200);
+  assert.ok(audit.data.items.some((a) => a.action === "case-resolve" && a.actor_id === "admin2"));
+  assert.equal((await call(env, ops + "/audit", "admin")).status, 403);
+  assert.equal((await call(env, ops + "/system", "admin")).status, 403);
+  assert.equal((await call(env, ops + "/settings", "admin")).status, 403);
+});
+
+test("profile moderation persists, blocks public exposure and new proposals, and leaves existing contracts usable", async () => {
+  const { db, env } = setup();
+  await operationsTeam(env);
+  await register(env, "client");
+  await register(env, "pro", "profesional");
+  const photo = await attachProfilePhoto(db, env, "pro");
+  db.prepare("UPDATE accounts SET verification='aprobado' WHERE user_id='pro'").run();
+  let job = (await call(env, "/jobs", "client", details)).data.job;
+  job = (
+    await call(env, "/jobs/" + job.id, "pro", { action: "quote", version: job.version, quote })
+  ).data.job;
+  job = (
+    await call(env, "/jobs/" + job.id, "client", {
+      action: "decide-quote",
+      version: job.version,
+      quoteId: job.quotes[0].id,
+      revision: 1,
+      accept: true,
+    })
+  ).data.job;
+  const control = {
+    userId: "pro",
+    version: 0,
+    hidden: true,
+    reason: "Perfil reportado pendiente de revisión operativa.",
+  };
+  assert.equal((await call(env, ops + "/profile-control", "admin", control)).status, 403);
+  assert.equal((await call(env, ops + "/profile-control", "super", control)).status, 200);
+  assert.equal((await call(env, "/providers", null)).data.providers.length, 0);
+  assert.equal((await call(env, "/providers/pro", null)).status, 404);
+  assert.equal((await handleMarket(req("/files/" + photo, null), env)).status, 403);
+  assert.equal((await call(env, "/jobs/" + job.id, "pro")).status, 200);
+  assert.equal(
+    (await call(env, "/session", "pro")).data.account.operationalHold.reason,
+    control.reason,
+  );
+  const next = (await call(env, "/jobs", "client", details)).data.job;
+  assert.equal(
+    (await call(env, "/jobs/" + next.id, "pro", { action: "quote", version: next.version, quote }))
+      .status,
+    403,
+  );
+  assert.equal(
+    (await call(env, ops + "/profile-control", "super", { ...control, hidden: false })).status,
+    409,
+  );
+  assert.equal(
+    (
+      await call(env, ops + "/profile-control", "super", {
+        ...control,
+        version: 1,
+        hidden: false,
+        reason: "La revisión fue completada satisfactoriamente.",
+      })
+    ).status,
+    200,
+  );
+  assert.equal((await call(env, "/providers/pro", null)).status, 200);
+  assert.equal(
+    (await call(env, "/jobs/" + next.id, "pro", { action: "quote", version: next.version, quote }))
+      .status,
+    200,
+  );
+});
+
+test("team access suspension respects hierarchy, open cases and reactivation without changing customer identities", async () => {
+  const { db, env } = setup();
+  await operationsTeam(env);
+  const created = await call(env, ops + "/cases", "admin", caseInput);
+  let c = (await call(env, ops + "/cases/" + created.data.id, "super")).data.case;
+  const pause = {
+    userId: "admin",
+    version: 0,
+    paused: true,
+    reason: "Pausa temporal del acceso por reasignación de funciones.",
+  };
+  assert.equal((await call(env, ops + "/team-access", "admin", pause)).status, 403);
+  assert.equal((await call(env, ops + "/team-access", "super", pause)).status, 409);
+  assert.equal(
+    (
+      await call(env, ops + "/cases/" + c.id, "super", {
+        action: "assign",
+        version: c.version,
+        assigneeId: "admin2",
+        note: "Reasignación previa a pausar el acceso.",
+      })
+    ).status,
+    200,
+  );
+  assert.equal((await call(env, ops + "/team-access", "super", pause)).status, 200);
+  assert.equal((await call(env, "/session", "admin")).data.staffRole, null);
+  assert.equal((await call(env, "/session", "admin")).data.staffAccessPaused, true);
+  const acceptedInvite = db.prepare("SELECT id FROM staff_invites WHERE used_by='admin'").get();
+  assert.match(
+    (await call(env, "/invites/preview?id=" + acceptedInvite.id, "admin")).data.message,
+    /acceso de gestión está pausado/,
+  );
+  assert.equal((await call(env, ops + "/summary", "admin")).status, 403);
+  assert.equal(
+    (await call(env, "/staff", "super")).data.team.find((t) => t.user_id === "admin").access_paused,
+    1,
+  );
+  assert.equal(
+    (await call(env, ops + "/team-access", "super", { ...pause, paused: false, version: 1 }))
+      .status,
+    200,
+  );
+  assert.equal((await call(env, "/session", "admin")).data.staffRole, "admin");
+  assert.equal(
+    (await call(env, ops + "/team-access", "super", { ...pause, paused: false, version: 1 }))
+      .status,
+    409,
+  );
+  const pending = await call(env, "/staff/invite", "super", { email: "later@example.test" });
+  assert.equal(
+    (
+      await call(env, ops + "/team-access", "super", {
+        userId: "super",
+        version: 0,
+        paused: true,
+        reason: "No puede pausarse a sí mismo.",
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await call(env, ops + "/team-access", "ceo", {
+        userId: "super",
+        version: 0,
+        paused: true,
+        reason: "Pausa de acceso de supervisión.",
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (await call(env, "/invites/preview?id=" + pending.data.id, "later")).data.canAccept,
+    false,
+  );
+  assert.equal((await call(env, "/invites/accept", "later", { id: pending.data.id })).status, 403);
+  assert.equal(db.prepare("SELECT role FROM staff WHERE user_id='super'").get().role, "superadmin");
+});
+
+test("operating deadlines change alerts and new cases only, while system and audit report real stored records", async () => {
+  const { db, env } = setup();
+  await operationsTeam(env);
+  const old = await call(env, ops + "/cases", "super", caseInput);
+  const oldDue = (await call(env, ops + "/cases/" + old.data.id, "super")).data.case.due_at;
+  const initial = (await call(env, ops + "/settings", "super")).data;
+  const settings = {
+    version: initial.version,
+    config: { responseHours: 1, resolutionHours: 12, unansweredHours: 2 },
+  };
+  assert.equal((await call(env, ops + "/settings", "admin", settings, "PUT")).status, 403);
+  assert.equal((await call(env, ops + "/settings", "super", settings, "PUT")).status, 200);
+  assert.equal((await call(env, ops + "/settings", "super", settings, "PUT")).status, 409);
+  const recent = await call(env, ops + "/cases", "super", caseInput);
+  const newCase = (await call(env, ops + "/cases/" + recent.data.id, "super")).data.case;
+  assert.ok(Math.abs(newCase.due_at - newCase.created_at - 12 * 3600000) < 100);
+  assert.equal((await call(env, ops + "/cases/" + old.data.id, "super")).data.case.due_at, oldDue);
+  db.prepare("UPDATE operations_cases SET created_at=? WHERE id=?").run(
+    Date.now() - 2 * 3600000,
+    old.data.id,
+  );
+  const summary = (await call(env, ops + "/summary", "super")).data;
+  assert.equal(summary.cases.waiting, 1);
+  const system = await call(env, ops + "/system", "super");
+  assert.equal(system.status, 200);
+  assert.equal(system.data.counts.cases, 2);
+  assert.equal(system.data.database, true);
+  assert.equal(system.data.mail.configured, false);
+  assert.ok(!JSON.stringify(system.data).includes("API_KEY"));
+});
+
+test("concurrent case claims and access pauses never create double ownership or work assigned to paused staff", async () => {
+  const { db, env } = setup();
+  await operationsTeam(env);
+  const created = await call(env, ops + "/cases", "super", caseInput),
+    id = created.data.id;
+  const claimed = await Promise.all(
+    ["admin", "admin2"].map((user) =>
+      call(env, ops + "/cases/" + id, user, { action: "claim", version: 1 }),
+    ),
+  );
+  assert.equal(claimed.filter((r) => r.status === 200).length, 1);
+  assert.ok(claimed.every((r) => [200, 403, 409].includes(r.status)));
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM operations_notes WHERE case_id=?").get(id).n, 1);
+  const fresh = (await call(env, ops + "/cases", "super", caseInput)).data.id;
+  const active = db
+    .prepare("SELECT assignee_id FROM operations_cases WHERE id=?")
+    .get(id).assignee_id;
+  const target = active === "admin" ? "admin2" : "admin";
+  const results = await Promise.all([
+    call(env, ops + "/team-access", "super", {
+      userId: target,
+      version: 0,
+      paused: true,
+      reason: "Pausa de acceso concurrente a asignación.",
+    }),
+    call(env, ops + "/cases/" + fresh, "super", {
+      action: "assign",
+      version: 1,
+      assigneeId: target,
+      note: "Asignación concurrente a revisión de acceso.",
+    }),
+  ]);
+  assert.equal(results.filter((r) => r.status === 200).length, 1);
+  assert.ok(results.every((r) => [200, 403, 409].includes(r.status)));
+  const paused = db
+    .prepare("SELECT paused FROM staff_access_controls WHERE user_id=?")
+    .get(target)?.paused;
+  if (paused)
+    assert.equal(
+      db
+        .prepare(
+          "SELECT COUNT(*) n FROM operations_cases WHERE assignee_id=? AND status!='resuelto'",
+        )
+        .get(target).n,
+      0,
+    );
+  else
+    assert.equal(
+      db.prepare("SELECT assignee_id FROM operations_cases WHERE id=?").get(fresh).assignee_id,
+      target,
+    );
+});
+
+test("directory public links support Google identity IDs and operational case filters exclude resolved work", async () => {
+  const { db, env } = setup();
+  await operationsTeam(env);
+  await register(env, "google:pro", "profesional");
+  await attachProfilePhoto(db, env, "google:pro");
+  db.prepare("UPDATE accounts SET verification='aprobado' WHERE user_id='google:pro'").run();
+  assert.equal(
+    (await call(env, "/providers/" + encodeURIComponent("google:pro"), null)).status,
+    200,
+  );
+  const c = (await call(env, ops + "/cases", "super", caseInput)).data.id;
+  db.prepare("UPDATE operations_cases SET due_at=? WHERE id=?").run(Date.now() - 3600000, c);
+  assert.equal((await call(env, ops + "/cases?status=vencidos", "super")).data.total, 1);
+  assert.equal(
+    (
+      await call(env, ops + "/cases/" + c, "super", {
+        action: "resolve",
+        version: 1,
+        resolution: "Se registró la resolución del caso para el cliente.",
+      })
+    ).status,
+    200,
+  );
+  assert.equal((await call(env, ops + "/cases?status=abiertos", "super")).data.total, 0);
+  assert.equal((await call(env, ops + "/cases?status=vencidos", "super")).data.total, 0);
+  assert.equal(
+    db.prepare("SELECT assignee_id FROM operations_cases WHERE id=?").get(c).assignee_id,
+    "super",
+  );
+});
+
+test("identity review audit records the winning mutation only when requests share the same actor and clock tick", async () => {
+  const { db, env } = setup();
+  await operationsTeam(env);
+  await register(env, "client");
+  const row = db.prepare("SELECT version FROM accounts WHERE user_id='client'").get();
+  const realNow = Date.now,
+    instant = realNow();
+  let results;
+  try {
+    Date.now = () => instant;
+    results = await Promise.all([
+      call(env, "/staff/review", "super", {
+        userId: "client",
+        version: row.version,
+        decision: "aprobado",
+      }),
+      call(env, "/staff/review", "super", {
+        userId: "client",
+        version: row.version,
+        decision: "aprobado",
+      }),
+    ]);
+  } finally {
+    Date.now = realNow;
+  }
+  assert.equal(results.filter((r) => r.status === 200).length, 1);
+  assert.ok(results.every((r) => [200, 409].includes(r.status)));
+  const audit = db
+    .prepare(
+      "SELECT * FROM operations_audit WHERE entity_id='client' AND action='identity-approved'",
+    )
+    .all();
+  assert.equal(audit.length, 1);
+  assert.equal(audit[0].actor_id, "super");
+});

@@ -106,6 +106,26 @@ El remitente puede ser temporalmente sustituido por Brevo al usar Gmail; el Repl
 
 Referencias: [API transaccional de Brevo](https://developers.brevo.com/reference/send-transac-email), [verificar remitentes](https://help.brevo.com/hc/en-us/articles/208836149-Create-a-new-sender-From-name-and-From-email), [salida de correo en Railway](https://docs.railway.com/networking/outbound-networking).
 
+### Operación ampliada por rol
+
+Los paneles retoman la organización del ZIP original y usan registros persistidos. La migración `0004_staff_operations.sql` agrega casos, notas, auditoría, controles de acceso/publicación y reglas operativas. No agrega personas, trabajos ni incidentes de muestra.
+
+| Rol | Herramientas |
+| --- | --- |
+| Administrador | Jornada con métricas y embudo, mesa de solicitudes, directorio de profesionales/empresas y clientes, verificaciones, ciudades y casos propios o sin asignar. Puede tomar casos, registrar notas, resolver casos ordinarios y escalar a supervisión. |
+| Superadministrador | Panorama global, equipo y accesos, asignación de casos a administradores de su equipo, prioridades, resolución de críticos/escalados, moderación de perfiles, zonas y liquidez, auditoría, reglas de atención y estado del sistema. |
+| CEO | Dirección comercial y acceso completo a operación desde la pestaña Operación; gestiona sus superadministradores y conserva los ajustes de precios, planes y apertura de zonas. |
+
+Los casos son registros internos: el equipo carga los reclamos recibidos por los canales de atención o los abre desde una cuenta o una solicitud. No se importan correos automáticamente. El cierre documenta la resolución y no cambia por sí solo el estado del trabajo, su presupuesto ni un pago. Las notas permanecen dentro del equipo autorizado; los administradores no pueden abrir casos asignados a otro administrador.
+
+Las asignaciones, notas, escalados, cierres, reaperturas, prioridades, decisiones de identidad y cambios de acceso/publicación se registran con actor y fecha. Las escrituras usan versiones para evitar que dos integrantes se sobrescriban. El historial de notas muestra las últimas 200 entradas de cada caso; auditoría, directorios y colas tienen paginación. La exportación CSV descarga la página visible, sin documentos de identidad ni conversaciones privadas.
+
+Pausar un acceso requiere reasignar primero los casos abiertos. El servidor deja de reconocer su rol de gestión y la reactivación conserva su cuenta e historial. Un superadministrador sólo administra accesos de administradores invitados por él; el CEO puede supervisar los accesos del equipo. Las invitaciones pendientes de un superadministrador pausado no pueden activarse hasta que se restablezca su acceso.
+
+La revisión operativa de un profesional o empresa oculta su perfil público y bloquea los nuevos presupuestos; permite continuar los contratos y conversaciones existentes. El motivo se muestra al titular. Restablecer la publicación no reemplaza la verificación de identidad ni la habilitación de la ciudad.
+
+Las métricas de contrataciones se calculan sobre solicitudes creadas en el período seleccionado. Los importes usan la versión aceptada del presupuesto, excluyen canceladas y no confirman cobro. Los plazos internos de resolución se fijan al crear el caso; cambiar las reglas no modifica vencimientos existentes. Los indicadores de archivos, correo e IA distinguen configuración de disponibilidad comprobada.
+
 ## 7. PWA en iPhone desde Railway
 
 1. Abrí tu dominio HTTPS directamente en Safari.

@@ -7,6 +7,7 @@ export type MarketAccount = {
   trade: string;
   bio: string;
   verification: string;
+  operationalHold?: { hidden: number; reason: string } | null;
   logoId: string | null;
   profilePhotoId: string | null;
   phone: string;
@@ -19,6 +20,7 @@ export type MarketSession = {
   identity: { name: string; email: string } | null;
   account: MarketAccount | null;
   staffRole: "ceo" | "superadmin" | "admin" | null;
+  staffAccessPaused?: boolean;
 };
 export type MarketJob = {
   id: string;

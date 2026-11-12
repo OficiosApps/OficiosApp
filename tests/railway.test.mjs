@@ -70,9 +70,32 @@ async function flow(auth) {
 test("Railway seed is idempotent, persists files/configuration and does not fabricate accounts", async (t) => {
   const { directory, storage } = await fixture(t);
   const { sqlite, DB, BUCKET } = storage;
-  assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM railway_migrations").get().n, 5);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM railway_migrations").get().n, 6);
   assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM accounts").get().n, 0);
   assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM staff").get().n, 0);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM operations_cases").get().n, 0);
+  sqlite
+    .prepare("UPDATE operations_settings SET body=?,version=2 WHERE id='service'")
+    .run(JSON.stringify({ responseHours: 12, resolutionHours: 24, unansweredHours: 8 }));
+  const operationId = crypto.randomUUID(),
+    timestamp = Date.now();
+  sqlite
+    .prepare(
+      "INSERT INTO operations_cases(id,title,description,category,priority,status,created_by,due_at,created_at,updated_at,update_token) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+    )
+    .run(
+      operationId,
+      "Seguimiento persistido",
+      "Caso registrado para verificar persistencia.",
+      "seguimiento",
+      "media",
+      "nuevo",
+      "fixture",
+      timestamp + 3600000,
+      timestamp,
+      timestamp,
+      crypto.randomUUID(),
+    );
   sqlite
     .prepare("UPDATE market_settings SET body = ? WHERE setting_key = 'commercial'")
     .run('{"kept":true}');
@@ -89,6 +112,18 @@ test("Railway seed is idempotent, persists files/configuration and does not fabr
   storage.close();
   const reopened = openStorage(directory);
   try {
+    assert.equal(
+      reopened.sqlite.prepare("SELECT title FROM operations_cases WHERE id=?").get(operationId)
+        .title,
+      "Seguimiento persistido",
+    );
+    assert.equal(
+      JSON.parse(
+        reopened.sqlite.prepare("SELECT body FROM operations_settings WHERE id='service'").get()
+          .body,
+      ).resolutionHours,
+      24,
+    );
     assert.equal(
       reopened.sqlite
         .prepare("SELECT body FROM market_settings WHERE setting_key = 'commercial'")

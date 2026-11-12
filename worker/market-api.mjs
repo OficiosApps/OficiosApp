@@ -1,4 +1,9 @@
 import {
+  handleStaffOperations,
+  profileIsHidden,
+  operationsAuditStatement,
+} from "./staff-operations.mjs";
+import {
   staffMailStatus,
   staffMailMessages,
   deliverStaffInvitation,
@@ -173,8 +178,13 @@ export async function marketViewer(request, env) {
     staffRole = "ceo";
   else
     staffRole =
-      (await env.DB.prepare("SELECT role FROM staff WHERE user_id = ?").bind(identity.id).first())
-        ?.role ?? null;
+      (
+        await env.DB.prepare(
+          "SELECT s.role FROM staff s LEFT JOIN staff_access_controls c ON c.user_id=s.user_id WHERE s.user_id = ? AND COALESCE(c.paused,0)=0",
+        )
+          .bind(identity.id)
+          .first()
+      )?.role ?? null;
   return { identity, account, staffRole };
 }
 export function marketPageAllowed(path, viewer) {
@@ -259,9 +269,23 @@ export async function handleMarket(request, env) {
               version: viewer.account.version,
               identity: JSON.parse(viewer.account.identity_json),
               profile: JSON.parse(viewer.account.profile_json),
+              operationalHold: await env.DB.prepare(
+                "SELECT hidden,reason FROM operations_profile_controls WHERE user_id=? AND hidden=1",
+              )
+                .bind(viewer.account.user_id)
+                .first(),
             }
           : null,
         staffRole: viewer.staffRole,
+        staffAccessPaused: viewer.identity
+          ? Boolean(
+              (
+                await env.DB.prepare("SELECT paused FROM staff_access_controls WHERE user_id=?")
+                  .bind(viewer.identity.id)
+                  .first()
+              )?.paused,
+            )
+          : false,
       });
     requireMarket(env.DB, "La base de datos no está disponible. Intentá más tarde.", 503);
     if (path === "/api/market/config" && request.method === "GET")
@@ -272,7 +296,7 @@ export async function handleMarket(request, env) {
     if (path === "/api/market/providers" && request.method === "GET") {
       const rows = await marketRows(
         env.DB.prepare(
-          "SELECT * FROM accounts WHERE kind != 'cliente' AND verification = 'aprobado' ORDER BY created_at DESC LIMIT 100",
+          "SELECT * FROM accounts WHERE kind != 'cliente' AND verification = 'aprobado' AND NOT EXISTS(SELECT 1 FROM operations_profile_controls c WHERE c.user_id=accounts.user_id AND c.hidden=1) ORDER BY created_at DESC LIMIT 100",
         ),
       );
       const { config } = await readMarketConfig(env);
@@ -297,9 +321,13 @@ export async function handleMarket(request, env) {
       const row = await env.DB.prepare(
         "SELECT * FROM accounts WHERE user_id = ? AND kind != 'cliente' AND verification = 'aprobado'",
       )
-        .bind(publicProfile[1])
+        .bind(decodeURIComponent(publicProfile[1]))
         .first();
-      requireMarket(row && marketProfileComplete(row), "El perfil no está disponible.", 404);
+      requireMarket(
+        row && marketProfileComplete(row) && !(await profileIsHidden(env, row.user_id)),
+        "El perfil no está disponible.",
+        404,
+      );
       const works = await marketRows(
         env.DB.prepare(
           "SELECT id,body FROM works WHERE owner_id = ? AND published = 1 ORDER BY created_at DESC LIMIT 50",
@@ -329,7 +357,7 @@ export async function handleMarket(request, env) {
         )
           .bind(file.owner_id)
           .first();
-        if (owner && marketProfileComplete(owner)) {
+        if (owner && marketProfileComplete(owner) && !(await profileIsHidden(env, owner.user_id))) {
           if (file.scope === "logo") allowed = true;
           else {
             const rows = await marketRows(
@@ -468,6 +496,20 @@ export async function handleMarket(request, env) {
         .bind(id)
         .first();
       requireMarket(invite, "La invitación no existe o ya no está disponible.", 404);
+      const issuerActive =
+        invite.role !== "admin" ||
+        Boolean(
+          await env.DB.prepare(
+            "SELECT s.user_id FROM staff s LEFT JOIN staff_access_controls c ON c.user_id=s.user_id WHERE s.user_id=? AND s.role='superadmin' AND COALESCE(c.paused,0)=0",
+          )
+            .bind(invite.invited_by)
+            .first(),
+        );
+      const existingMembership = await env.DB.prepare(
+        "SELECT s.user_id,COALESCE(c.paused,0) paused FROM staff s LEFT JOIN staff_access_controls c ON c.user_id=s.user_id WHERE s.user_id=?",
+      )
+        .bind(viewer.identity.id)
+        .first();
       const matchesEmail = invite.email === viewer.identity.email;
       const status = invite.used_by
         ? "accepted"
@@ -483,20 +525,29 @@ export async function handleMarket(request, env) {
         matchesEmail,
         status,
         acceptedByYou,
-        canAccept: status === "pending" && matchesEmail && !viewer.staffRole,
-        message: !matchesEmail
-          ? "Este enlace fue enviado a otro correo. Elegí en Google la cuenta que recibió la invitación."
-          : acceptedByYou
-            ? "Ya aceptaste esta invitación. Podés entrar a tu panel."
-            : status === "accepted"
-              ? "Esta invitación ya fue utilizada."
-              : status === "expired"
-                ? "La invitación venció. Pedile a quien te invitó que cree una nueva."
-                : viewer.staffRole === "ceo"
-                  ? "Estás usando la cuenta CEO. Elegí la cuenta invitada para activar su acceso de superadministrador."
-                  : viewer.staffRole
-                    ? "Esta cuenta ya tiene un acceso de gestión. No se modifica su rol mediante este enlace."
-                    : "Confirmá la invitación para activar tu acceso al equipo.",
+        canAccept:
+          status === "pending" &&
+          matchesEmail &&
+          !viewer.staffRole &&
+          !existingMembership &&
+          issuerActive,
+        message: !issuerActive
+          ? "La invitación está pausada. Contactá a la dirección de Oficios."
+          : !matchesEmail
+            ? "Este enlace fue enviado a otro correo. Elegí en Google la cuenta que recibió la invitación."
+            : existingMembership?.paused
+              ? "Tu acceso de gestión está pausado. Contactá al responsable de tu equipo para que lo revise."
+              : acceptedByYou
+                ? "Ya aceptaste esta invitación. Podés entrar a tu panel."
+                : status === "accepted"
+                  ? "Esta invitación ya fue utilizada."
+                  : status === "expired"
+                    ? "La invitación venció. Pedile a quien te invitó que cree una nueva."
+                    : viewer.staffRole === "ceo"
+                      ? "Estás usando la cuenta CEO. Elegí la cuenta invitada para activar su acceso de superadministrador."
+                      : viewer.staffRole
+                        ? "Esta cuenta ya tiene un acceso de gestión. No se modifica su rol mediante este enlace."
+                        : "Confirmá la invitación para activar tu acceso al equipo.",
       });
     }
     if (path === "/api/market/invites/accept" && request.method === "POST") {
@@ -514,9 +565,24 @@ export async function handleMarket(request, env) {
         403,
       );
       requireMarket(
-        !viewer.staffRole,
+        !viewer.staffRole &&
+          !(await env.DB.prepare("SELECT user_id FROM staff WHERE user_id=?")
+            .bind(viewer.identity.id)
+            .first()),
         "Esta cuenta ya tiene un rol de gestión. Ingresá con el correo invitado; el enlace no cambia tu rol actual.",
         409,
+      );
+      requireMarket(
+        invite.role !== "admin" ||
+          Boolean(
+            await env.DB.prepare(
+              "SELECT s.user_id FROM staff s LEFT JOIN staff_access_controls c ON c.user_id=s.user_id WHERE s.user_id=? AND s.role='superadmin' AND COALESCE(c.paused,0)=0",
+            )
+              .bind(invite.invited_by)
+              .first(),
+          ),
+        "La invitación está pausada. Contactá a la dirección de Oficios.",
+        403,
       );
       const now = Date.now();
       const changes = await env.DB.batch([
@@ -540,6 +606,8 @@ export async function handleMarket(request, env) {
     }
     if (path.startsWith("/api/market/staff")) {
       requireMarket(canReview(viewer), "No tenés permisos de administración.", 403);
+      if (path.startsWith("/api/market/staff/operations/"))
+        return await handleStaffOperations(request, env, viewer, marketBody);
       if (path === "/api/market/staff/mail/check" && request.method === "POST") {
         requireMarket(
           viewer.staffRole === "ceo",
@@ -588,7 +656,7 @@ export async function handleMarket(request, env) {
               ? []
               : await marketRows(
                   env.DB.prepare(
-                    "SELECT s.user_id,s.role,s.created_at,(SELECT i.email FROM staff_invites i WHERE i.used_by = s.user_id ORDER BY i.created_at DESC LIMIT 1) AS email FROM staff s WHERE s.invited_by = ? AND s.role = ? ORDER BY s.created_at DESC LIMIT 100",
+                    "SELECT s.user_id,s.role,s.created_at,COALESCE(c.paused,0) access_paused,COALESCE(c.version,0) access_version,c.reason access_reason,(SELECT COUNT(*) FROM operations_cases oc WHERE oc.assignee_id=s.user_id AND oc.status!='resuelto') open_cases,(SELECT COUNT(*) FROM operations_cases oc WHERE oc.assignee_id=s.user_id AND oc.status='resuelto') closed_cases,(SELECT i.email FROM staff_invites i WHERE i.used_by = s.user_id ORDER BY i.created_at DESC LIMIT 1) AS email FROM staff s LEFT JOIN staff_access_controls c ON c.user_id=s.user_id WHERE s.invited_by = ? AND s.role = ? ORDER BY s.created_at DESC LIMIT 100",
                   ).bind(viewer.identity.id, viewer.staffRole === "ceo" ? "superadmin" : "admin"),
                 ),
           deliveryMessages: viewer.staffRole === "admin" ? null : staffMailMessages,
@@ -723,6 +791,7 @@ export async function handleMarket(request, env) {
         }
         details.review = {
           by: viewer.identity.id,
+          token: crypto.randomUUID(),
           at: Date.now(),
           reason: marketText(data.reason ?? "", data.decision === "rechazado" ? 5 : 0, 500),
         };
@@ -731,6 +800,18 @@ export async function handleMarket(request, env) {
         ).bind(data.decision, JSON.stringify(details), Date.now(), account.user_id, data.version);
         const results = await env.DB.batch([
           review,
+          operationsAuditStatement(
+            env,
+            viewer,
+            data.decision === "aprobado" ? "identity-approved" : "identity-rejected",
+            "account",
+            account.user_id,
+            account.name,
+            {
+              sql: "EXISTS(SELECT 1 FROM accounts WHERE user_id=? AND version=? AND json_extract(identity_json,'$.review.token')=?)",
+              values: [account.user_id, data.version + 1, details.review.token],
+            },
+          ),
           ...(data.decision === "aprobado" ? rewardReferralStatements(env, account.user_id) : []),
         ]);
         requireMarket(
@@ -1212,6 +1293,15 @@ export async function handleMarket(request, env) {
             at: from,
           };
         }
+        if (
+          data.action === "quote" &&
+          !previous.quotes.some((q) => q.professionalId === account.user_id)
+        )
+          requireMarket(
+            !(await profileIsHidden(env, account.user_id)),
+            "Tu perfil está en revisión operativa. No podés enviar nuevos presupuestos.",
+            403,
+          );
         const next = changeMarketJob(previous, account, data);
         let result;
         if (data.action === "assign")

@@ -1,3 +1,4 @@
+import { OperationsView } from "@/components/staff-operations";
 import { ManagementLayout } from "@/components/management-layout";
 import { StaffWorkspace } from "@/components/market-staff";
 import { toast } from "sonner";
@@ -74,8 +75,7 @@ export function LiveCeoPanel() {
                 <StaffWorkspace section="team" />
               </TabsContent>
               <TabsContent value="operacion" className="mt-6 space-y-8">
-                <StaffWorkspace section="metrics" />
-                <StaffWorkspace section="reviews" />
+                <CeoOperations />
               </TabsContent>
               <TabsContent value="mapa" className="mt-6">
                 <CeoOrdersMap regions={data.config.regions} />
@@ -656,6 +656,44 @@ function CeoOrdersMap({ regions }: { regions: MarketRegion[] }) {
             </section>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+function CeoOperations() {
+  const [section, setSection] = useState("resumen");
+  return (
+    <div className="space-y-6">
+      <label className="block max-w-sm space-y-2 text-sm">
+        <span>Área de operación</span>
+        <select
+          aria-label="Área de operación"
+          value={section.split("?")[0]}
+          onChange={(e) => setSection(e.target.value)}
+          className="h-10 w-full rounded-xl border border-input bg-background px-3"
+        >
+          {[
+            ["resumen", "Panorama general"],
+            ["solicitudes", "Mesa de solicitudes"],
+            ["casos", "Control de incidentes"],
+            ["directorio", "Directorio y moderación"],
+            ["zonas", "Zonas y liquidez"],
+            ["revisiones", "Verificaciones"],
+            ["auditoria", "Auditoría operativa"],
+            ["reglas", "Reglas de atención"],
+            ["sistema", "Estado del sistema"],
+          ].map(([id, name]) => (
+            <option key={id} value={id}>
+              {name}
+            </option>
+          ))}
+        </select>
+      </label>
+      {section === "revisiones" ? (
+        <StaffWorkspace section="reviews" />
+      ) : (
+        <OperationsView key={section} section={section} onSelect={setSection} />
       )}
     </div>
   );

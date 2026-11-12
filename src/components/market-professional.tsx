@@ -30,6 +30,15 @@ export function LiveProfessionalPanel() {
       title={session.account?.kind === "empresa" ? "Mi empresa" : "Mi espacio profesional"}
       subtitle="Tus solicitudes, mensajes y trabajos, desde un solo lugar."
     >
+      {session.account?.operationalHold && (
+        <div className="mb-6">
+          <MarketNotice>
+            Tu perfil está en revisión operativa: {session.account.operationalHold.reason}. Podés
+            continuar los trabajos ya contratados. Los nuevos presupuestos y la publicación están
+            pausados.
+          </MarketNotice>
+        </div>
+      )}
       <div className="surface-panel mb-7 flex flex-wrap items-center justify-between gap-4 p-6">
         <div>
           <h2 className="font-display text-xl font-semibold">{session.account?.name}</h2>

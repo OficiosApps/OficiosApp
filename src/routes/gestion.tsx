@@ -94,8 +94,9 @@ function ManagementEntry() {
                 )
               ) : (
                 <MarketNotice>
-                  Este correo todavía no tiene acceso al equipo. Abrí el enlace de tu invitación o
-                  pedí una al responsable correspondiente.
+                  {session.staffAccessPaused
+                    ? "Tu acceso de gestión está pausado. Contactá al responsable de tu equipo para que lo revise."
+                    : "Este correo todavía no tiene acceso al equipo. Abrí el enlace de tu invitación o pedí una al responsable correspondiente."}
                 </MarketNotice>
               )}
               <form

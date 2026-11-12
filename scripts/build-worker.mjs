@@ -36,6 +36,10 @@ const settings = (await readFile("worker/market-settings.mjs", "utf8")).replace(
   "",
 );
 const staffMail = await readFile("worker/staff-mail.mjs", "utf8");
+const operations = (await readFile("worker/staff-operations.mjs", "utf8")).replace(
+  /^import[\s\S]*?from ["']\.\/[^"']+["'];\r?\n/gm,
+  "",
+);
 const api = (await readFile("worker/market-api.mjs", "utf8"))
   .replace(/^import[\s\S]*?from ["']\.\/market-domain\.mjs["'];\r?\n/m, "")
   .replace(/^import[\s\S]*?from ["']\.\/market-settings\.mjs["'];\r?\n/m, "");
@@ -48,6 +52,6 @@ const wrapper = (await readFile("worker/index.mjs", "utf8"))
 await mkdir("dist/server", { recursive: true });
 await writeFile(
   "dist/server/index.js",
-  `${customerAccess}\n${domain}\n${settings}\n${staffMail}\n${api}\n${handler}\n${wrapper}`,
+  `${customerAccess}\n${domain}\n${settings}\n${staffMail}\n${operations}\n${api}\n${handler}\n${wrapper}`,
 );
 console.log(`Worker listo: ${Object.keys(files).length} archivos del sitio y API de chat.`);

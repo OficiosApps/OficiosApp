@@ -4,7 +4,17 @@ import { Crown, ShieldCheck, ClipboardCheck, Wrench, ArrowLeft, LogOut } from "l
 import { useMarket } from "@/hooks/use-market";
 import { managementRoles } from "@/lib/management-access";
 import { Button } from "@/components/ui/button";
-export function ManagementLayout({ children }: { children: ReactNode }) {
+export function ManagementLayout({
+  children,
+  navigation,
+  activeSection,
+  onSectionChange,
+}: {
+  children: ReactNode;
+  navigation?: { id: string; label: string }[];
+  activeSection?: string;
+  onSectionChange?: (id: string) => void;
+}) {
   const { session } = useMarket();
   if (!session.staffRole) return null;
   const role = session.staffRole;
@@ -33,7 +43,7 @@ export function ManagementLayout({ children }: { children: ReactNode }) {
         </div>
       </header>
       <div className="mx-auto grid max-w-[1440px] lg:grid-cols-[250px_minmax(0,1fr)]">
-        <aside className={`p-6 lg:min-h-[calc(100vh-80px)] ${info.color}`}>
+        <aside className={`min-w-0 p-6 lg:min-h-[calc(100vh-80px)] ${info.color}`}>
           <div
             className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold ${info.badge}`}
           >
@@ -41,19 +51,40 @@ export function ManagementLayout({ children }: { children: ReactNode }) {
             {info.label}
           </div>
           <p className="mt-7 text-xs uppercase tracking-widest opacity-60">Tu espacio de trabajo</p>
-          <nav aria-label="Gestión" className="mt-3">
-            <Link
-              to={info.home}
-              className="block rounded-xl bg-white/10 px-4 py-3 text-sm font-semibold"
+          {navigation ? (
+            <nav
+              aria-label="Secciones de gestión"
+              className="mt-3 flex gap-2 overflow-x-auto pb-2 lg:flex-col lg:overflow-visible"
             >
-              {info.title}
-            </Link>
-          </nav>
-          <ul className="mt-5 hidden space-y-4 text-sm opacity-80 lg:block">
-            {info.tasks.map((task) => (
-              <li key={task}>{task}</li>
-            ))}
-          </ul>
+              {navigation.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => onSectionChange?.(item.id)}
+                  aria-current={activeSection === item.id ? "page" : undefined}
+                  className={`shrink-0 rounded-xl px-4 py-3 text-left text-sm transition hover:bg-white/10 ${activeSection === item.id ? "bg-white/15 font-semibold" : "opacity-80"}`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </nav>
+          ) : (
+            <>
+              <nav aria-label="Gestión" className="mt-3">
+                <Link
+                  to={info.home}
+                  className="block rounded-xl bg-white/10 px-4 py-3 text-sm font-semibold"
+                >
+                  {info.title}
+                </Link>
+              </nav>
+              <ul className="mt-5 hidden space-y-4 text-sm opacity-80 lg:block">
+                {info.tasks.map((task) => (
+                  <li key={task}>{task}</li>
+                ))}
+              </ul>
+            </>
+          )}
           <Link to="/" className="mt-8 inline-flex items-center gap-2 text-xs opacity-80">
             <ArrowLeft className="size-4" />
             Ir al sitio de Oficios

@@ -3,6 +3,7 @@ import {
   Link,
   createRootRouteWithContext,
   useRouter,
+  useLocation,
   HeadContent,
   Scripts,
   type ErrorComponentProps,
@@ -148,9 +149,14 @@ function RootComponent() {
       {/* The boundary renders customer routes and keeps internal workspaces closed. */}
       <MarketProvider>
         <CustomerAccessBoundary />
-        <HelpChat />
+        <PublicHelpChat />
         <Toaster position="top-center" richColors />
       </MarketProvider>
     </QueryClientProvider>
   );
+}
+
+function PublicHelpChat() {
+  const { pathname } = useLocation();
+  return /^\/(ceo|superadmin|admin|equipo|gestion)(\/|$)/.test(pathname) ? null : <HelpChat />;
 }
