@@ -1,0 +1,23 @@
+{
+  "name": "Oficios — Profesionales de servicios",
+  "short_name": "Oficios",
+  "description": "Encontrá profesionales verificados, cercanos y disponibles. Pedí presupuestos y contratá en un solo lugar.",
+  "lang": "es-AR",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#fbfaf5",
+  "theme_color": "#1c4f45",
+  "categories": ["business", "utilities", "lifestyle"],
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Pedir un servicio", "url": "/solicitud" },
+    { "name": "Categorías", "url": "/categorias" },
+    { "name": "Panel del profesional", "url": "/panel-profesional" }
+  ]
+}

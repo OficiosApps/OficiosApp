@@ -1,0 +1,1163 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
+import { readFileSync, readdirSync } from "node:fs";
+import { handleMarket, marketPageAllowed, marketViewer } from "../worker/market-api.mjs";
+function setup() {
+  const db = new DatabaseSync(":memory:");
+  for (const file of readdirSync(new URL("../drizzle/", import.meta.url))
+    .filter((file) => file.endsWith(".sql"))
+    .sort())
+    db.exec(readFileSync(new URL("../drizzle/" + file, import.meta.url), "utf8"));
+  const stored = new Map();
+  function prepare(sql, values = []) {
+    return {
+      bind(...params) {
+        return prepare(sql, params);
+      },
+      async first() {
+        return db.prepare(sql).get(...values) ?? null;
+      },
+      async all() {
+        return { results: db.prepare(sql).all(...values) };
+      },
+      runSync() {
+        return { meta: { changes: Number(db.prepare(sql).run(...values).changes) } };
+      },
+      async run() {
+        return this.runSync();
+      },
+    };
+  }
+  const env = {
+    OFICIOS_CEO_EMAIL: "ceo@example.test",
+    DB: {
+      prepare,
+      async batch(statements) {
+        db.exec("BEGIN");
+        try {
+          const results = [];
+          for (const statement of statements) results.push(statement.runSync());
+          db.exec("COMMIT");
+          return results;
+        } catch (error) {
+          db.exec("ROLLBACK");
+          throw error;
+        }
+      },
+    },
+    BUCKET: {
+      async put(key, bytes) {
+        stored.set(key, bytes);
+      },
+      async get(key) {
+        return stored.has(key) ? { body: stored.get(key) } : null;
+      },
+      async delete(key) {
+        stored.delete(key);
+      },
+    },
+  };
+  return { db, env };
+}
+const origin = "https://oficios.example";
+function req(path, user, body, method = body ? "POST" : "GET") {
+  return new Request(origin + "/api/market" + path, {
+    method,
+    headers: {
+      ...(user
+        ? {
+            "oai-authenticated-user-id": user,
+            "oai-authenticated-user-email": user + "@example.test",
+          }
+        : {}),
+      ...(body ? { "content-type": "application/json", origin } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+}
+const profile = (kind = "cliente") => ({
+  name: "Persona de prueba",
+  kind,
+  cityId: "mercedes-ba",
+  trade: "plomeria",
+  consent: true,
+});
+async function stageSelfie(env, id) {
+  const form = new FormData();
+  form.set(
+    "file",
+    new File([new Uint8Array([255, 216, 255, 224, 0, 16])], "selfie.jpg", { type: "image/jpeg" }),
+  );
+  const response = await handleMarket(
+    new Request(origin + "/api/market/client-selfie", {
+      method: "POST",
+      headers: { origin, ...(id ? { "oai-authenticated-user-id": id } : {}) },
+      body: form,
+    }),
+    env,
+  );
+  const result = await response.json();
+  return { status: response.status, ...result };
+}
+async function clientRegistration(env, id) {
+  const selfie = await stageSelfie(env, id);
+  assert.equal(selfie.status, 201);
+  return { ...profile(), clientSelfieId: selfie.id, clientSelfieConsent: true };
+}
+async function register(env, id, kind = "cliente") {
+  const data = kind === "cliente" ? await clientRegistration(env, id) : profile(kind);
+  const response = await handleMarket(req("/account", id, data), env);
+  assert.equal(response.status, 201, await response.text());
+}
+async function attachProfilePhoto(db, env, user) {
+  const id = `${user}-profile-photo`;
+  db.prepare(
+    "INSERT INTO uploads(id,owner_id,scope,object_key,mime,created_at) VALUES(?,?,?,?,?,?)",
+  ).run(id, user, "logo", id, "image/png", 1);
+  await env.BUCKET.put(id, new Uint8Array([1, 2, 3]));
+  db.prepare("UPDATE accounts SET profile_json = ? WHERE user_id = ?").run(
+    JSON.stringify({ profilePhotoId: id }),
+    user,
+  );
+  return id;
+}
+const details = {
+  category: "plomeria",
+  cityId: "mercedes-ba",
+  service: "Reparar una pérdida",
+  type: "urgente",
+  description: "",
+  address: "Domicilio privado 123",
+  contact: "2324555555",
+  when: "A coordinar",
+  photoIds: [],
+};
+const quote = {
+  labor: 100,
+  materials: 50,
+  visit: 10,
+  days: 2,
+  warrantyMonths: 6,
+  notes: "Incluye materiales",
+};
+async function call(env, path, user, body, method) {
+  const response = await handleMarket(req(path, user, body, method), env);
+  return { status: response.status, data: await response.json() };
+}
+test("registration persists per platform identity without creating admin roles or reusing browser examples", async () => {
+  const { db, env } = setup();
+  assert.equal((await call(env, "/account", null, profile())).status, 401);
+  await register(env, "client");
+  await register(env, "professional", "profesional");
+  const one = (await call(env, "/session", "client")).data;
+  assert.equal(one.account.kind, "cliente");
+  assert.equal(one.staffRole, null);
+  assert.equal(
+    (await call(env, "/session", "professional")).data.account.verification,
+    "sin-enviar",
+  );
+  assert.equal((await call(env, "/account", "client", profile("profesional"))).status, 409);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM staff").get().n, 0);
+  assert.equal((await call(env, "/jobs", "client")).data.jobs.length, 0);
+  assert.equal((await call(env, "/account", "bad", { ...profile(), kind: "ceo" })).status, 400);
+  assert.equal((await call(env, "/staff", "client")).status, 403);
+});
+test("professional entry uses real session permissions and same-origin writes", async () => {
+  const { env } = setup();
+  await register(env, "professional", "profesional");
+  const viewer = await marketViewer(req("/session", "professional"), env);
+  assert.equal(marketPageAllowed("/panel-profesional", viewer), true);
+  assert.equal(marketPageAllowed("/admin", viewer), false);
+  assert.equal(marketPageAllowed("/panel-empresa", viewer), false);
+  const forged = new Request(origin + "/api/market/account", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      origin: "https://evil.example",
+      "oai-authenticated-user-id": "victim",
+    },
+    body: JSON.stringify(profile()),
+  });
+  assert.equal((await handleMarket(forged, env)).status, 403);
+});
+test("quotes, ownership, private addresses, accepted-price revisions and stale updates are enforced in SQL", async () => {
+  const { db, env } = setup();
+  await register(env, "client");
+  await register(env, "other");
+  await register(env, "pro", "profesional");
+  let job = (await call(env, "/jobs", "client", details)).data.job;
+  assert.equal((await call(env, "/jobs/" + job.id, "other")).status, 403);
+  assert.equal(
+    (await call(env, "/jobs/" + job.id, "pro", { action: "quote", version: job.version, quote }))
+      .status,
+    403,
+  );
+  await attachProfilePhoto(db, env, "pro");
+  db.prepare("UPDATE accounts SET verification = 'aprobado' WHERE user_id = 'pro'").run();
+  assert.equal((await call(env, "/jobs/" + job.id, "pro")).data.job.address, "");
+  job = (
+    await call(env, "/jobs/" + job.id, "pro", { action: "quote", version: job.version, quote })
+  ).data.job;
+  let proposal = job.quotes[0];
+  job = (
+    await call(env, "/jobs/" + job.id, "client", {
+      action: "decide-quote",
+      version: job.version,
+      quoteId: proposal.id,
+      revision: 1,
+      accept: true,
+    })
+  ).data.job;
+  assert.equal(job.state, "contratado");
+  assert.equal((await call(env, "/jobs/" + job.id, "pro")).data.job.address, details.address);
+  const oldVersion = job.version;
+  job = (
+    await call(env, "/jobs/" + job.id, "pro", {
+      action: "quote",
+      version: job.version,
+      quote: { ...quote, labor: 200 },
+    })
+  ).data.job;
+  assert.equal(job.quotes[0].acceptedVersion, 1);
+  assert.equal(job.quotes[0].revisions[0].labor, 10000);
+  assert.equal(
+    (
+      await call(env, "/jobs/" + job.id, "client", {
+        action: "decide-quote",
+        version: oldVersion,
+        quoteId: proposal.id,
+        revision: 2,
+        accept: true,
+      })
+    ).status,
+    409,
+  );
+  job = (
+    await call(env, "/jobs/" + job.id, "client", {
+      action: "decide-quote",
+      version: job.version,
+      quoteId: proposal.id,
+      revision: 2,
+      accept: false,
+    })
+  ).data.job;
+  assert.equal(job.quotes[0].acceptedVersion, 1);
+  job = (
+    await call(env, "/jobs/" + job.id, "client", {
+      action: "visit",
+      version: job.version,
+      date: "2099-01-01",
+      time: "10:00",
+    })
+  ).data.job;
+  assert.equal(
+    (await call(env, "/jobs/" + job.id, "client", { action: "start", version: job.version }))
+      .status,
+    403,
+  );
+  job = (await call(env, "/jobs/" + job.id, "pro", { action: "start", version: job.version })).data
+    .job;
+  job = (await call(env, "/jobs/" + job.id, "client", { action: "finish", version: job.version }))
+    .data.job;
+  assert.equal(job.state, "finalizado");
+  job = (
+    await call(env, "/jobs/" + job.id, "client", {
+      action: "message",
+      version: job.version,
+      professionalId: "pro",
+      text: "Necesito otro trabajo",
+    })
+  ).data.job;
+  assert.equal(job.messages.length, 1);
+  assert.equal(
+    (
+      await call(env, "/jobs/" + job.id, "other", {
+        action: "message",
+        version: job.version,
+        professionalId: "pro",
+        text: "Intento ajeno",
+      })
+    ).status,
+    403,
+  );
+});
+test("only CEO invites superadmins, superadmins invite admins, and invitations are email-bound and single-use", async () => {
+  const { env } = setup();
+  const invite = await call(env, "/staff/invite", "ceo", {
+    email: "super@example.test",
+    role: "ceo",
+  });
+  assert.equal(invite.status, 201);
+  assert.equal(invite.data.role, "superadmin");
+  assert.equal(
+    (await call(env, "/invites/accept", "stranger", { id: invite.data.id })).status,
+    403,
+  );
+  assert.equal((await call(env, "/invites/accept", "super", { id: invite.data.id })).status, 200);
+  assert.equal((await call(env, "/invites/accept", "super", { id: invite.data.id })).status, 403);
+  const adminInvite = await call(env, "/staff/invite", "super", {
+    email: "admin@example.test",
+    role: "superadmin",
+  });
+  assert.equal(adminInvite.data.role, "admin");
+  await call(env, "/invites/accept", "admin", { id: adminInvite.data.id });
+  assert.equal(
+    (await call(env, "/staff/invite", "admin", { email: "another@example.test" })).status,
+    403,
+  );
+  assert.equal((await call(env, "/session", "super")).data.staffRole, "superadmin");
+});
+test("identity files are private, upload ownership is checked, and the applicant cannot approve themself", async () => {
+  const { db, env } = setup();
+  await register(env, "pro", "profesional");
+  await register(env, "other", "profesional");
+  await attachProfilePhoto(db, env, "pro");
+  for (const id of ["front", "back", "selfie"]) {
+    db.prepare(
+      "INSERT INTO uploads(id,owner_id,scope,object_key,mime,created_at) VALUES(?,?,?,?,?,?)",
+    ).run(id, "pro", "identity", id, "image/png", 1);
+    await env.BUCKET.put(id, new Uint8Array([1, 2, 3]));
+  }
+  assert.equal((await handleMarket(req("/files/front", "other"), env)).status, 403);
+  assert.equal((await handleMarket(req("/files/front", "pro"), env)).status, 200);
+  assert.equal(
+    (
+      await call(env, "/identity", "other", {
+        dni: "12345678",
+        frontId: "front",
+        backId: "back",
+        selfieId: "selfie",
+        consent: true,
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await call(env, "/identity", "pro", {
+        dni: "12345678",
+        frontId: "front",
+        backId: "back",
+        selfieId: "selfie",
+        consent: true,
+      })
+    ).status,
+    200,
+  );
+  let user = (await call(env, "/session", "pro")).data.account;
+  assert.equal(user.verification, "pendiente");
+  assert.equal(
+    (
+      await call(env, "/staff/review", "other", {
+        userId: "pro",
+        decision: "aprobado",
+        version: user.version,
+      })
+    ).status,
+    403,
+  );
+  env.OFICIOS_CEO_EMAIL = "pro@example.test";
+  assert.equal(
+    (
+      await call(env, "/staff/review", "pro", {
+        userId: "pro",
+        decision: "aprobado",
+        version: user.version,
+      })
+    ).status,
+    403,
+  );
+  env.OFICIOS_CEO_EMAIL = "ceo@example.test";
+  assert.equal(
+    (
+      await call(env, "/staff/review", "ceo", {
+        userId: "pro",
+        decision: "aprobado",
+        version: user.version,
+      })
+    ).status,
+    200,
+  );
+  assert.equal((await call(env, "/session", "pro")).data.account.verification, "aprobado");
+  assert.equal((await handleMarket(req("/files/front", null), env)).status, 403);
+  assert.equal((await call(env, "/providers", null)).data.providers.length, 1);
+});
+test("saved addresses belong to the account and are not visible or deletable by another person", async () => {
+  const { env } = setup();
+  await register(env, "one");
+  await register(env, "two");
+  const added = await call(env, "/addresses", "one", {
+    label: "Casa",
+    kind: "casa",
+    cityId: "mercedes-ba",
+    address: "Calle privada 123",
+    reference: "",
+  });
+  assert.equal((await call(env, "/addresses", "two")).data.addresses.length, 0);
+  await call(env, "/addresses", "two", { id: added.data.id }, "DELETE");
+  assert.equal((await call(env, "/addresses", "one")).data.addresses.length, 1);
+});
+
+test("a client can enable a professional profile while retaining their own requests and without gaining internal roles", async () => {
+  const { env } = setup();
+  await register(env, "newpro");
+  const created = (await call(env, "/jobs", "newpro", details)).data.job;
+  assert.equal(
+    (
+      await call(
+        env,
+        "/account",
+        "newpro",
+        {
+          action: "enable-services",
+          kind: "profesional",
+          trade: "plomeria",
+          cityId: "mercedes-ba",
+        },
+        "PATCH",
+      )
+    ).status,
+    200,
+  );
+  const session = (await call(env, "/session", "newpro")).data;
+  assert.equal(session.account.kind, "profesional");
+  assert.equal(session.account.verification, "sin-enviar");
+  assert.equal(session.staffRole, null);
+  assert.equal((await call(env, "/jobs?scope=client", "newpro")).data.jobs[0].id, created.id);
+  assert.equal((await call(env, "/staff", "newpro")).status, 403);
+});
+
+test("file upload checks actual bytes and keeps identity photos private", async () => {
+  const { env } = setup();
+  await register(env, "pro", "profesional");
+  await register(env, "other", "profesional");
+  const form = new FormData();
+  form.set("scope", "identity");
+  form.set(
+    "file",
+    new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0])], "test.png", {
+      type: "image/png",
+    }),
+  );
+  const uploaded = await handleMarket(
+    new Request(origin + "/api/market/upload", {
+      method: "POST",
+      headers: {
+        origin,
+        "oai-authenticated-user-id": "pro",
+        "oai-authenticated-user-email": "pro@example.test",
+      },
+      body: form,
+    }),
+    env,
+  );
+  assert.equal(uploaded.status, 201);
+  const { id } = await uploaded.json();
+  assert.equal((await handleMarket(req("/files/" + id, "pro"), env)).status, 200);
+  assert.equal((await handleMarket(req("/files/" + id, "other"), env)).status, 403);
+  const bad = new FormData();
+  bad.set("scope", "identity");
+  bad.set("file", new File(["<html>bad</html>"], "bad.png", { type: "image/png" }));
+  assert.equal(
+    (
+      await handleMarket(
+        new Request(origin + "/api/market/upload", {
+          method: "POST",
+          headers: { origin, "oai-authenticated-user-id": "pro" },
+          body: bad,
+        }),
+        env,
+      )
+    ).status,
+    400,
+  );
+});
+
+test("work publication needs declared permission and withdrawal closes access to the images", async () => {
+  const { db, env } = setup();
+  await register(env, "pro", "profesional");
+  await attachProfilePhoto(db, env, "pro");
+  db.prepare("UPDATE accounts SET verification='aprobado' WHERE user_id='pro'").run();
+  for (const id of ["before", "after"]) {
+    db.prepare(
+      "INSERT INTO uploads(id,owner_id,scope,object_key,mime,created_at) VALUES(?,?,?,?,?,?)",
+    ).run(id, "pro", "work", id, "image/png", 1);
+    await env.BUCKET.put(id, new Uint8Array([1, 2, 3]));
+  }
+  const work = {
+    title: "Trabajo realizado",
+    description: "Descripción del trabajo realizado.",
+    date: "2026-01-01",
+    beforeId: "before",
+    afterId: "after",
+    clientWork: true,
+    clientConsent: false,
+    published: true,
+  };
+  assert.equal((await call(env, "/works", "pro", work)).status, 400);
+  const saved = await call(env, "/works", "pro", { ...work, clientConsent: true });
+  assert.equal(saved.status, 201);
+  assert.equal((await handleMarket(req("/files/before", null), env)).status, 200);
+  assert.equal(
+    (await call(env, "/works/" + saved.data.id, "pro", { published: false }, "PATCH")).status,
+    200,
+  );
+  assert.equal((await handleMarket(req("/files/before", null), env)).status, 403);
+});
+
+test("company team assignment checks membership, identity and overlapping turns across concurrent jobs", async () => {
+  const { db, env } = setup();
+  await register(env, "client");
+  await register(env, "company", "empresa");
+  await register(env, "member", "profesional");
+  await attachProfilePhoto(db, env, "member");
+  db.prepare(
+    "UPDATE accounts SET verification='aprobado' WHERE user_id IN ('company','member')",
+  ).run();
+  const invited = await call(env, "/company", "company", {
+    name: "Integrante",
+    email: "member@example.test",
+    trade: "plomeria",
+  });
+  assert.equal((await call(env, "/company/accept", "member", { id: invited.data.id })).status, 200);
+  const jobs = [];
+  for (let i = 0; i < 2; i++) {
+    let job = (await call(env, "/jobs", "client", details)).data.job;
+    job = (
+      await call(env, "/jobs/" + job.id, "company", {
+        action: "quote",
+        version: job.version,
+        quote,
+      })
+    ).data.job;
+    job = (
+      await call(env, "/jobs/" + job.id, "client", {
+        action: "decide-quote",
+        version: job.version,
+        quoteId: job.quotes[0].id,
+        revision: 1,
+        accept: true,
+      })
+    ).data.job;
+    jobs.push(job);
+  }
+  const slot = {
+    action: "assign",
+    memberId: invited.data.id,
+    date: "2099-01-01",
+    time: "10:00",
+    minutes: 60,
+  };
+  const results = await Promise.all(
+    jobs.map((job) => call(env, "/jobs/" + job.id, "company", { ...slot, version: job.version })),
+  );
+  assert.deepEqual(results.map((r) => r.status).sort(), [200, 409]);
+  const assigned = results.find((r) => r.status === 200).data.job;
+  assert.equal(
+    (await call(env, "/jobs/" + assigned.id, "member")).data.job.address,
+    details.address,
+  );
+  assert.equal(
+    (
+      await call(env, "/jobs/" + assigned.id, "member", {
+        action: "quote",
+        version: assigned.version,
+        quote,
+      })
+    ).status,
+    403,
+  );
+});
+
+test("professional onboarding requires an owned public profile photo in addition to private DNI and selfie", async () => {
+  const { db, env } = setup();
+  await register(env, "pro", "profesional");
+  await register(env, "other", "profesional");
+  await register(env, "client");
+  const payload = {
+    dni: "12345678",
+    frontId: "front",
+    backId: "back",
+    selfieId: "selfie",
+    consent: true,
+  };
+  for (const id of ["front", "back", "selfie"]) {
+    db.prepare(
+      "INSERT INTO uploads(id,owner_id,scope,object_key,mime,created_at) VALUES(?,?,?,?,?,?)",
+    ).run(id, "pro", "identity", id, "image/png", 1);
+    await env.BUCKET.put(id, new Uint8Array([1, 2, 3]));
+  }
+  assert.equal((await call(env, "/session", "pro")).data.account.kind, "profesional");
+  assert.equal((await call(env, "/identity", "pro", payload)).status, 400);
+  assert.equal((await call(env, "/session", "pro")).data.account.verification, "sin-enviar");
+  const otherPhoto = await attachProfilePhoto(db, env, "other");
+  assert.equal(
+    (await call(env, "/identity", "pro", { ...payload, profilePhotoId: otherPhoto })).status,
+    403,
+  );
+  assert.equal(
+    (await call(env, "/identity", "pro", { ...payload, profilePhotoId: "front" })).status,
+    403,
+  );
+  const photo = await attachProfilePhoto(db, env, "pro");
+  assert.equal(
+    (await call(env, "/identity", "pro", { ...payload, profilePhotoId: photo, dni: "" })).status,
+    400,
+  );
+  assert.equal(
+    (await call(env, "/identity", "pro", { ...payload, profilePhotoId: photo, backId: undefined }))
+      .status,
+    400,
+  );
+  assert.equal(
+    (await call(env, "/identity", "pro", { ...payload, profilePhotoId: photo })).status,
+    200,
+  );
+  assert.equal((await handleMarket(req("/files/" + photo, "ceo"), env)).status, 200);
+  assert.equal((await handleMarket(req("/files/" + photo, null), env)).status, 403);
+  const account = (await call(env, "/session", "pro")).data.account;
+  db.prepare("UPDATE accounts SET profile_json='{}' WHERE user_id='pro'").run();
+  assert.equal(
+    (
+      await call(env, "/staff/review", "ceo", {
+        userId: "pro",
+        decision: "aprobado",
+        version: account.version,
+      })
+    ).status,
+    400,
+  );
+  db.prepare("UPDATE accounts SET profile_json=? WHERE user_id=?").run(
+    JSON.stringify({ profilePhotoId: photo }),
+    "pro",
+  );
+  assert.equal(
+    (
+      await call(env, "/staff/review", "ceo", {
+        userId: "pro",
+        decision: "aprobado",
+        version: account.version,
+      })
+    ).status,
+    200,
+  );
+  assert.equal((await handleMarket(req("/files/" + photo, null), env)).status, 200);
+  assert.equal((await handleMarket(req("/files/front", null), env)).status, 403);
+  const publicProfile = (await call(env, "/providers/pro", null)).data.provider;
+  assert.equal(publicProfile.profilePhotoId, photo);
+  assert.equal(publicProfile.identity, undefined);
+  assert.equal(
+    (await call(env, "/identity", "client", { ...payload, profilePhotoId: photo })).status,
+    403,
+  );
+});
+
+test("approved professionals missing a profile photo cannot publish themselves or quote and can complete the missing requirement", async () => {
+  const { db, env } = setup();
+  await register(env, "pro", "profesional");
+  await register(env, "client");
+  const job = (await call(env, "/jobs", "client", details)).data.job;
+  db.prepare("UPDATE accounts SET verification='aprobado' WHERE user_id='pro'").run();
+  assert.equal((await call(env, "/providers", null)).data.providers.length, 0);
+  assert.equal((await call(env, "/providers/pro", null)).status, 404);
+  assert.equal(
+    (await call(env, "/jobs/" + job.id, "pro", { action: "quote", quote, version: job.version }))
+      .status,
+    403,
+  );
+  for (const id of ["front", "back", "selfie"])
+    db.prepare(
+      "INSERT INTO uploads(id,owner_id,scope,object_key,mime,created_at) VALUES(?,?,?,?,?,?)",
+    ).run(id, "pro", "identity", id, "image/png", 1);
+  // Uploading a new photo does not make it part of the profile before submitting.
+  db.prepare(
+    "INSERT INTO uploads(id,owner_id,scope,object_key,mime,created_at) VALUES(?,?,?,?,?,?)",
+  ).run("photo", "pro", "logo", "photo", "image/png", 1);
+  assert.equal(
+    (
+      await call(env, "/identity", "pro", {
+        dni: "12345678",
+        frontId: "front",
+        backId: "back",
+        selfieId: "selfie",
+        profilePhotoId: "photo",
+        consent: true,
+      })
+    ).status,
+    200,
+  );
+  assert.equal((await call(env, "/session", "pro")).data.account.verification, "pendiente");
+});
+
+test("changing an approved professional profile photo requires review again and a photo cannot be cleared", async () => {
+  const { db, env } = setup();
+  await register(env, "pro", "profesional");
+  const photo = await attachProfilePhoto(db, env, "pro");
+  db.prepare("UPDATE accounts SET verification='aprobado' WHERE user_id='pro'").run();
+  const account = (await call(env, "/session", "pro")).data.account;
+  assert.equal(
+    (
+      await call(
+        env,
+        "/account",
+        "pro",
+        { name: account.name, bio: "", phone: "", profilePhotoId: "", version: account.version },
+        "PATCH",
+      )
+    ).status,
+    400,
+  );
+  assert.equal((await call(env, "/session", "pro")).data.account.profilePhotoId, photo);
+  db.prepare(
+    "INSERT INTO uploads(id,owner_id,scope,object_key,mime,created_at) VALUES(?,?,?,?,?,?)",
+  ).run("new-photo", "pro", "logo", "new-photo", "image/png", 1);
+  assert.equal(
+    (
+      await call(
+        env,
+        "/account",
+        "pro",
+        {
+          name: account.name,
+          bio: "",
+          phone: "",
+          profilePhotoId: "new-photo",
+          version: account.version,
+        },
+        "PATCH",
+      )
+    ).status,
+    200,
+  );
+  const after = (await call(env, "/session", "pro")).data.account;
+  assert.equal(after.verification, "pendiente");
+  assert.equal(after.profilePhotoId, "new-photo");
+  assert.equal((await call(env, "/providers", null)).data.providers.length, 0);
+});
+
+test("commercial settings are CEO-only, versioned, audited and published without enabling billing", async () => {
+  const { db, env } = setup();
+  await register(env, "client");
+  await register(env, "pro", "profesional");
+  for (const user of ["client", "pro", null])
+    assert.equal((await call(env, "/ceo/config", user)).status, 403);
+  db.prepare("INSERT INTO staff(user_id,role,invited_by,created_at) VALUES(?,?,?,?)").run(
+    "super",
+    "superadmin",
+    "ceo",
+    1,
+  );
+  assert.equal((await call(env, "/ceo/config", "super")).status, 403);
+  const initial = (await call(env, "/ceo/config", "ceo")).data;
+  assert.equal(initial.version, 0);
+  assert.equal(initial.config.regions.find((r) => r.id === "caba-ar").status, "preparacion");
+  const draft = structuredClone(initial.config);
+  draft.plans[1].priceCents = 1550;
+  draft.plans[1].benefits = ["Beneficio editable por CEO"];
+  const results = await Promise.all([
+    call(env, "/ceo/config", "ceo", { version: 0, config: draft }, "PUT"),
+    call(env, "/ceo/config", "ceo", { version: 0, config: draft }, "PUT"),
+  ]);
+  assert.deepEqual(results.map((r) => r.status).sort(), [200, 409]);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM commercial_audit").get().n, 1);
+  const published = (await call(env, "/config", null)).data;
+  assert.equal(published.plans[1].priceCents, 1550);
+  assert.deepEqual(published.plans[1].benefits, ["Beneficio editable por CEO"]);
+  assert.equal(published.billingEnabled, false);
+  assert.equal(
+    published.regions.some((r) => r.id === "caba-ar"),
+    false,
+  );
+  const current = (await call(env, "/ceo/config", "ceo")).data;
+  draft.plans[0].priceCents = 100;
+  assert.equal(
+    (await call(env, "/ceo/config", "ceo", { version: current.version, config: draft }, "PUT"))
+      .status,
+    400,
+  );
+});
+
+test("zone activation opens registration and orders, while pausing preserves existing work", async () => {
+  const { env } = setup();
+  assert.equal(
+    (
+      await call(env, "/account", "capital-user", {
+        ...(await clientRegistration(env, "capital-user")),
+        cityId: "caba-ar",
+      })
+    ).status,
+    400,
+  );
+  let saved = (await call(env, "/ceo/config", "ceo")).data;
+  const config = saved.config;
+  config.regions.find((r) => r.id === "caba-ar").status = "activa";
+  assert.equal(
+    (await call(env, "/ceo/config", "ceo", { version: saved.version, config }, "PUT")).status,
+    200,
+  );
+  assert.equal(
+    (
+      await call(env, "/account", "capital-user", {
+        ...(await clientRegistration(env, "capital-user")),
+        cityId: "caba-ar",
+      })
+    ).status,
+    201,
+  );
+  const created = await call(env, "/jobs", "capital-user", { ...details, cityId: "caba-ar" });
+  assert.equal(created.status, 201);
+  saved = (await call(env, "/ceo/config", "ceo")).data;
+  saved.config.regions.find((r) => r.id === "caba-ar").status = "pausada";
+  await call(env, "/ceo/config", "ceo", { version: saved.version, config: saved.config }, "PUT");
+  assert.equal(
+    (await call(env, "/jobs", "capital-user", { ...details, cityId: "caba-ar" })).status,
+    400,
+  );
+  assert.equal(
+    (await call(env, "/account", "new-capital-user", { ...profile(), cityId: "caba-ar" })).status,
+    400,
+  );
+  assert.equal((await call(env, "/jobs/" + created.data.job.id, "capital-user")).status, 200);
+  assert.equal(
+    (await call(env, "/config", null)).data.regions.some((r) => r.id === "caba-ar"),
+    false,
+  );
+});
+
+test("new proposal quotas and referral bonuses are atomic and revisions do not consume another slot", async () => {
+  const { db, env } = setup();
+  await register(env, "client");
+  await register(env, "pro", "profesional");
+  await attachProfilePhoto(db, env, "pro");
+  db.prepare("UPDATE accounts SET verification='aprobado' WHERE user_id='pro'").run();
+  const settings = (await call(env, "/ceo/config", "ceo")).data;
+  settings.config.plans[0].quoteLimit = 1;
+  settings.config.plans[0].maxPaymentMethods = 1;
+  await call(
+    env,
+    "/ceo/config",
+    "ceo",
+    { version: settings.version, config: settings.config },
+    "PUT",
+  );
+  const jobs = [];
+  for (let i = 0; i < 2; i++) jobs.push((await call(env, "/jobs", "client", details)).data.job);
+  const results = await Promise.all(
+    jobs.map((job) =>
+      call(env, "/jobs/" + job.id, "pro", { action: "quote", version: job.version, quote }),
+    ),
+  );
+  assert.deepEqual(results.map((r) => r.status).sort(), [200, 409]);
+  const accepted = results.find((r) => r.status === 200).data.job;
+  const latest = (await call(env, "/jobs/" + accepted.id, "client")).data.job;
+  const rejected = (
+    await call(env, "/jobs/" + latest.id, "client", {
+      action: "decide-quote",
+      version: latest.version,
+      quoteId: latest.quotes[0].id,
+      revision: 1,
+      accept: false,
+    })
+  ).data.job;
+  assert.equal(
+    (
+      await call(env, "/jobs/" + rejected.id, "pro", {
+        action: "quote",
+        version: rejected.version,
+        quote,
+      })
+    ).status,
+    200,
+  );
+  const entitlements = (await call(env, "/entitlements", "pro")).data;
+  assert.equal(entitlements.usedQuotes, 1);
+  assert.equal(entitlements.availableQuotes, 0);
+  assert.equal(entitlements.maxPaymentMethods, 1);
+  const account = (await call(env, "/session", "pro")).data.account;
+  assert.equal(
+    (
+      await call(
+        env,
+        "/account",
+        "pro",
+        {
+          name: account.name,
+          bio: "",
+          phone: "",
+          version: account.version,
+          paymentMethods: [
+            { kind: "efectivo", label: "Efectivo", value: "" },
+            { kind: "transferencia", label: "Banco", value: "alias.cuenta" },
+          ],
+        },
+        "PATCH",
+      )
+    ).status,
+    400,
+  );
+});
+
+test("referral credits require approved identity, keep promised rules and are awarded only once", async () => {
+  const { db, env } = setup();
+  await register(env, "referrer", "profesional");
+  await attachProfilePhoto(db, env, "referrer");
+  db.prepare("UPDATE accounts SET verification='aprobado' WHERE user_id='referrer'").run();
+  let settings = (await call(env, "/ceo/config", "ceo")).data;
+  settings.config.referrals.enabled = true;
+  settings.config.referrals.rewardQuotes = 2;
+  settings.config.referrals.maxRewardsPerReferrer = 1;
+  settings.config.plans[0].quoteLimit = 1;
+  await call(
+    env,
+    "/ceo/config",
+    "ceo",
+    { version: settings.version, config: settings.config },
+    "PUT",
+  );
+  assert.equal((await call(env, "/referrals", "referrer", { action: "create-code" })).status, 200);
+  const code = (await call(env, "/referrals", "referrer")).data.code;
+  assert.equal((await call(env, "/referrals", "referrer", { action: "bind", code })).status, 400);
+  assert.equal(
+    (await call(env, "/account", "friend", { ...profile("profesional"), referralCode: code }))
+      .status,
+    201,
+  );
+  assert.equal((await call(env, "/entitlements", "referrer")).data.bonusQuotes, 0);
+  await attachProfilePhoto(db, env, "friend");
+  for (const id of ["friend-front", "friend-back", "friend-selfie"]) {
+    db.prepare(
+      "INSERT INTO uploads(id,owner_id,scope,object_key,mime,created_at) VALUES(?,?,?,?,?,?)",
+    ).run(id, "friend", "identity", id, "image/png", 1);
+  }
+  assert.equal(
+    (
+      await call(env, "/identity", "friend", {
+        dni: "12345678",
+        frontId: "friend-front",
+        backId: "friend-back",
+        selfieId: "friend-selfie",
+        consent: true,
+      })
+    ).status,
+    200,
+  );
+  settings = (await call(env, "/ceo/config", "ceo")).data;
+  settings.config.referrals.rewardQuotes = 50;
+  settings.config.referrals.enabled = false;
+  await call(
+    env,
+    "/ceo/config",
+    "ceo",
+    { version: settings.version, config: settings.config },
+    "PUT",
+  );
+  const friend = (await call(env, "/session", "friend")).data.account;
+  assert.equal(
+    (
+      await call(env, "/staff/review", "ceo", {
+        userId: "friend",
+        decision: "aprobado",
+        version: friend.version,
+      })
+    ).status,
+    200,
+  );
+  const balance = (await call(env, "/entitlements", "referrer")).data;
+  assert.equal(balance.bonusQuotes, 2);
+  assert.equal(balance.availableQuotes, 3);
+  assert.equal(
+    (
+      await call(env, "/staff/review", "ceo", {
+        userId: "friend",
+        decision: "aprobado",
+        version: friend.version,
+      })
+    ).status,
+    409,
+  );
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM referral_rewards").get().n, 1);
+  const refs = (await call(env, "/referrals", "referrer")).data;
+  assert.equal(refs.entries[0].amount, 2);
+  assert.ok(refs.entries[0].qualified_at);
+  assert.equal(
+    (await call(env, "/account", "late-friend", { ...profile("profesional"), referralCode: code }))
+      .status,
+    400,
+  );
+});
+
+test("the CEO order map protects exact locations and manual pin changes do not alter address or job state", async () => {
+  const { db, env } = setup();
+  await register(env, "client");
+  await register(env, "pro", "profesional");
+  await attachProfilePhoto(db, env, "pro");
+  db.prepare("UPDATE accounts SET verification='aprobado' WHERE user_id='pro'").run();
+  const job = (
+    await call(env, "/jobs", "client", {
+      ...details,
+      location: { lat: -34.65, lng: -59.43, source: "forged" },
+    })
+  ).data.job;
+  assert.equal(job.location.source, "cliente");
+  assert.equal((await call(env, "/jobs/" + job.id, "pro")).data.job.location, null);
+  assert.equal((await call(env, "/ceo/orders", "client")).status, 403);
+  const listed = (await call(env, "/ceo/orders", "ceo")).data;
+  assert.equal(listed.orders[0].address, details.address);
+  assert.equal(listed.orders[0].location.lat, -34.65);
+  const changed = await call(
+    env,
+    "/ceo/orders/" + job.id + "/location",
+    "ceo",
+    { version: job.version, location: { lat: -34.66, lng: -59.44 } },
+    "PATCH",
+  );
+  assert.equal(changed.status, 200);
+  const after = (await call(env, "/jobs/" + job.id, "client")).data.job;
+  assert.equal(after.address, details.address);
+  assert.equal(after.state, "solicitado");
+  assert.equal(after.location.lat, -34.66);
+  assert.equal(after.version, job.version + 1);
+  assert.equal(
+    (
+      await call(
+        env,
+        "/ceo/orders/" + job.id + "/location",
+        "ceo",
+        { version: job.version, location: { lat: -34.7, lng: -59.5 } },
+        "PATCH",
+      )
+    ).status,
+    409,
+  );
+  assert.equal(
+    db.prepare("SELECT COUNT(*) n FROM commercial_audit WHERE action='order-location'").get().n,
+    1,
+  );
+  assert.equal(
+    (await call(env, "/jobs", "client", { ...details, location: { lat: 999, lng: 0 } })).status,
+    400,
+  );
+  const without = (await call(env, "/jobs", "client", details)).data.job;
+  assert.equal(without.location, null);
+});
+
+test("monthly referral limits use the Argentina calendar and CEO routes never follow a URL role switch", async () => {
+  const { marketMonth } = await import("../worker/market-settings.mjs");
+  assert.equal(marketMonth(Date.parse("2026-12-01T02:59:59Z")).key, "2026-11");
+  assert.equal(
+    marketMonth(Date.parse("2026-12-01T02:59:59Z")).end,
+    Date.parse("2026-12-01T03:00:00Z"),
+  );
+  assert.equal(marketMonth(Date.parse("2026-12-01T03:00:00Z")).key, "2026-12");
+  assert.equal(marketPageAllowed("/ceo", { staffRole: "admin", account: null }), false);
+  assert.equal(marketPageAllowed("/ceo", { staffRole: "superadmin", account: null }), false);
+  assert.equal(marketPageAllowed("/ceo", { staffRole: "ceo", account: null }), true);
+  assert.equal(
+    marketPageAllowed("/planes-profesionales", { staffRole: null, account: { kind: "empresa" } }),
+    false,
+  );
+});
+
+test("client registration requires an owned fresh private selfie and explicit consent, without DNI", async () => {
+  const { db, env } = setup();
+  assert.equal((await stageSelfie(env, null)).status, 401);
+  assert.equal((await call(env, "/account", "new", profile())).status, 400);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM accounts").get().n, 0);
+  const data = await clientRegistration(env, "new");
+  assert.equal((await call(env, "/account", "other", data)).status, 403);
+  assert.equal(
+    (await call(env, "/account", "new", { ...data, clientSelfieConsent: false })).status,
+    400,
+  );
+  assert.equal((await call(env, "/files/" + data.clientSelfieId, "new")).status, 404);
+  assert.equal((await call(env, "/account", "new", data)).status, 201);
+  const account = (await call(env, "/session", "new")).data.account;
+  assert.equal(account.verification, "pendiente");
+  assert.equal(account.identity.clientSelfieId, data.clientSelfieId);
+  assert.equal(account.identity.dni, undefined);
+  assert.equal(account.profilePhotoId, null);
+  assert.equal(
+    db.prepare("SELECT scope FROM uploads WHERE id = ?").get(data.clientSelfieId).scope,
+    "client-selfie",
+  );
+  const old = await clientRegistration(env, "late");
+  db.prepare("UPDATE client_selfie_uploads SET created_at = 0 WHERE id = ?").run(
+    old.clientSelfieId,
+  );
+  assert.equal((await call(env, "/account", "late", old)).status, 403);
+  await register(env, "professional", "profesional");
+  assert.equal((await stageSelfie(env, "professional")).status, 403);
+});
+
+test("client selfies stay private even after manual approval and never require DNI review", async () => {
+  const { env } = setup();
+  await register(env, "client");
+  await register(env, "pro", "profesional");
+  const account = (await call(env, "/session", "client")).data.account;
+  const path = "/files/" + account.identity.clientSelfieId;
+  for (const user of [null, "stranger", "pro"])
+    assert.equal((await handleMarket(req(path, user), env)).status, 403);
+  for (const user of ["client", "ceo"]) {
+    const response = await handleMarket(req(path, user), env);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "private, no-store");
+  }
+  assert.equal(
+    (await call(env, "/staff", "ceo")).data.reviews[0].identity.clientSelfieId,
+    account.identity.clientSelfieId,
+  );
+  const decision = { userId: "client", version: account.version, decision: "aprobado" };
+  assert.equal((await call(env, "/staff/review", "client", decision)).status, 403);
+  assert.equal((await call(env, "/staff/review", "ceo", decision)).status, 200);
+  assert.equal((await call(env, "/session", "client")).data.account.verification, "aprobado");
+  assert.equal((await handleMarket(req(path, "pro"), env)).status, 403);
+  assert.deepEqual((await call(env, "/providers", null)).data.providers, []);
+});
+
+test("replacing a client selfie resets manual review and stale submissions cannot consume uploads", async () => {
+  const { db, env } = setup();
+  await register(env, "client");
+  let account = (await call(env, "/session", "client")).data.account;
+  await call(env, "/staff/review", "ceo", {
+    userId: "client",
+    version: account.version,
+    decision: "rechazado",
+    reason: "Volvé a tomarla con luz",
+  });
+  account = (await call(env, "/session", "client")).data.account;
+  const first = await stageSelfie(env, "client"),
+    second = await stageSelfie(env, "client");
+  const results = await Promise.all(
+    [first, second].map((selfie) =>
+      call(env, "/client-verification", "client", {
+        selfieId: selfie.id,
+        consent: true,
+        version: account.version,
+      }),
+    ),
+  );
+  assert.deepEqual(results.map((r) => r.status).sort(), [200, 409]);
+  const fresh = (await call(env, "/session", "client")).data.account;
+  assert.equal(fresh.verification, "pendiente");
+  assert.equal(fresh.identity.review, undefined);
+  assert.equal(
+    db.prepare("SELECT COUNT(*) n FROM uploads WHERE scope = 'client-selfie'").get().n,
+    2,
+  );
+  const used = fresh.identity.clientSelfieId;
+  assert.equal(
+    (
+      await call(env, "/client-verification", "client", {
+        selfieId: used,
+        consent: true,
+        version: fresh.version,
+      })
+    ).status,
+    403,
+  );
+  const unclaimed = db
+    .prepare("SELECT COUNT(*) n FROM client_selfie_uploads WHERE claimed_at IS NULL")
+    .get().n;
+  assert.equal(unclaimed, 1);
+});

@@ -1,0 +1,12 @@
+node_modules
+.output
+dist
+.git
+.openai
+data
+.env
+.env.*
+!.env.example
+*.sqlite*
+*.log
+*.zip

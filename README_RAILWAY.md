@@ -17,7 +17,7 @@ Railway se conecta al repositorio. No recibe este ZIP como un sitio estático. T
 2. Conectá el repositorio. Railway detecta el Dockerfile.
 3. Agregá un volumen conectado al servicio con punto de montaje /data. Es obligatorio: guarda la base y las fotos.
 4. Conservá una sola réplica, como ya indica railway.json.
-5. En Settings > Networking > Public Networking elegí Generate Domain. Si solicita puerto, usá 3000; el servidor respeta PORT cuando Railway lo proporciona.
+5. En Settings > Networking > Public Networking elegí Generate Domain. Si solicita puerto, usá 8080; el puerto de destino del dominio debe coincidir con PORT. El servidor muestra su puerto de escucha en los registros de arranque.
 6. Copiá la URL HTTPS generada, por ejemplo https://TU-DOMINIO.up.railway.app.
 
 El primer despliegue puede esperar la configuración. Si falta el volumen, el servidor rechaza iniciar. Agregá el volumen y las variables siguientes, y volvé a desplegar. Las migraciones se ejecutan durante el arranque, cuando ya está montado el volumen.
