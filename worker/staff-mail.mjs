@@ -1,13 +1,19 @@
 // Only transactional team invitations. Provider credentials never reach the browser.
 export function staffMailStatus(env) {
   const from = (env.MAIL_FROM || "").trim();
+  const smtpKey = (env.BREVO_API_KEY || "").startsWith("xsmtpsib-");
   return {
-    configured: Boolean(env.BREVO_API_KEY && /^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(from)),
+    configured: Boolean(
+      env.BREVO_API_KEY && !smtpKey && /^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(from),
+    ),
+    issue: smtpKey ? "smtp_key" : null,
     provider: "Brevo",
     from: from || null,
   };
 }
 export const staffMailMessages = {
+  smtp_key:
+    "La clave cargada es SMTP. Esta conexión necesita una clave API de Brevo: creala en SMTP y API → Claves API y reemplazá BREVO_API_KEY en Railway.",
   not_configured:
     "El correo todavía no está activado. La invitación quedó guardada. Configurá BREVO_API_KEY y verificá el remitente en Brevo para enviarla.",
   credentials:
@@ -27,12 +33,13 @@ function staffMailEscape(value) {
 export async function deliverStaffInvitation(env, invite, origin) {
   const status = staffMailStatus(env);
   if (!status.configured) {
+    const code = status.issue || "not_configured";
     await env.DB.prepare(
-      "UPDATE staff_invites SET delivery_error = 'not_configured' WHERE id = ? AND delivery_status != 'sending'",
+      "UPDATE staff_invites SET delivery_error = ? WHERE id = ? AND delivery_status != 'sending'",
     )
-      .bind(invite.id)
+      .bind(code, invite.id)
       .run();
-    return { status: "pending", message: staffMailMessages.not_configured };
+    return { status: "pending", message: staffMailMessages[code] };
   }
   const now = Date.now();
   // Atomic lease prevents double clicks/concurrent requests from sending the same attempt twice.

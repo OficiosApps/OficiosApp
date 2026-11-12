@@ -221,7 +221,7 @@ export function StaffWorkspace({ section }: { section: "team" | "reviews" | "met
                   {!data.mail?.configured && (
                     <MarketNotice>
                       El envío de correo todavía no está activado. Las invitaciones se guardan, pero
-                      no se envían.{" "}
+                      no se envían. {data.mail?.issue && data.deliveryMessages?.[data.mail.issue]}{" "}
                       {session.staffRole === "ceo"
                         ? "Completá la configuración de correo de abajo."
                         : "Pedile al CEO que active el correo de la plataforma."}

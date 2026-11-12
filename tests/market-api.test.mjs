@@ -1216,6 +1216,23 @@ test("team mail saves unsent invitations honestly and can send them after provid
   );
 });
 
+test("SMTP credentials cannot be mistaken for a configured transactional API", async () => {
+  const { env, db } = setup();
+  env.MAIL_FROM = "team@example.test";
+  env.BREVO_API_KEY = "xsmtpsib-local-test-only";
+  env.MAIL_FETCH = async () => assert.fail("SMTP keys must never be sent to the API");
+  const result = await call(env, "/staff/invite", "ceo", { email: "super@example.test" });
+  assert.equal(result.data.delivery.status, "pending");
+  assert.match(result.data.delivery.message, /clave cargada es SMTP/);
+  const dashboard = (await call(env, "/staff", "ceo")).data;
+  assert.equal(dashboard.mail.configured, false);
+  assert.equal(dashboard.mail.issue, "smtp_key");
+  assert.equal(
+    db.prepare("SELECT delivery_error FROM staff_invites").get().delivery_error,
+    "smtp_key",
+  );
+});
+
 test("team mail classifies provider rejection and uncertain delivery without leaking provider data", async () => {
   for (const [status, expected, code] of [
     [401, "failed", "credentials"],
