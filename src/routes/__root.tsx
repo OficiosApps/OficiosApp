@@ -14,9 +14,10 @@ import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { registerServiceWorker } from "@/lib/pwa";
 import { Toaster } from "@/components/ui/sonner";
-import { MarketProvider } from "@/hooks/use-market";
+import { MarketProvider, useMarket } from "@/hooks/use-market";
 import { CustomerAccessBoundary } from "@/components/customer-access-boundary";
 import { HelpChat } from "@/components/help-chat";
+import { CeoPreviewBanner } from "@/components/ceo-dashboard-access";
 
 function NotFoundComponent() {
   return (
@@ -148,6 +149,7 @@ function RootComponent() {
     <QueryClientProvider client={queryClient}>
       {/* The boundary renders customer routes and keeps internal workspaces closed. */}
       <MarketProvider>
+        <CeoPreviewBanner />
         <CustomerAccessBoundary />
         <PublicHelpChat />
         <Toaster position="top-center" richColors />
@@ -158,5 +160,9 @@ function RootComponent() {
 
 function PublicHelpChat() {
   const { pathname } = useLocation();
-  return /^\/(ceo|superadmin|admin|equipo|gestion)(\/|$)/.test(pathname) ? null : <HelpChat />;
+  const { session } = useMarket();
+  return session.ceoPreview ||
+    /^\/(ceo|superadmin|admin|equipo|gestion)(\/|$)/.test(pathname) ? null : (
+    <HelpChat />
+  );
 }

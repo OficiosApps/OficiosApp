@@ -54,10 +54,14 @@ export function MarketJobList({
           <p className="mt-3 text-sm text-muted-foreground">
             {contacts
               ? "Después de contratar, vas a poder volver a escribirle desde acá."
-              : "Tu próximo trabajo empieza contando qué necesitás."}
+              : professional
+                ? "Los pedidos disponibles de tu oficio y ciudad aparecerán acá cuando tu perfil esté aprobado."
+                : "Tu próximo trabajo empieza contando qué necesitás."}
           </p>
           <Button asChild className="mt-6">
-            <Link to="/solicitud">Pedir un servicio</Link>
+            <Link to={professional ? "/cuenta" : "/solicitud"}>
+              {professional ? "Revisar mi perfil" : "Pedir un servicio"}
+            </Link>
           </Button>
         </section>
       ) : (

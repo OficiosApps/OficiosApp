@@ -32,6 +32,10 @@ if (!files["/index.html"]) throw new Error("Falta compilar la aplicación antes 
 const customerAccess = await readFile("src/lib/customer-access.js", "utf8");
 const domain = await readFile("worker/market-domain.mjs", "utf8");
 const buenosAires = await readFile("worker/buenos-aires-regions.mjs", "utf8");
+const ceoViews = (await readFile("worker/ceo-views.mjs", "utf8")).replace(
+  /^import[\s\S]*?from ["']\.\/market-domain\.mjs["'];\r?\n/m,
+  "",
+);
 const settings = (await readFile("worker/market-settings.mjs", "utf8")).replace(
   /^import[\s\S]*?from ["']\.\/[^"']+["'];\r?\n/gm,
   "",
@@ -42,6 +46,7 @@ const operations = (await readFile("worker/staff-operations.mjs", "utf8")).repla
   "",
 );
 const api = (await readFile("worker/market-api.mjs", "utf8"))
+  .replace(/^import[^\n]*from ["']\.\/ceo-views\.mjs["'];\r?\n/m, "")
   .replace(/^import[\s\S]*?from ["']\.\/market-domain\.mjs["'];\r?\n/m, "")
   .replace(/^import[\s\S]*?from ["']\.\/market-settings\.mjs["'];\r?\n/m, "");
 const handler = await readFile("worker/chat-handler.mjs", "utf8");
@@ -53,6 +58,6 @@ const wrapper = (await readFile("worker/index.mjs", "utf8"))
 await mkdir("dist/server", { recursive: true });
 await writeFile(
   "dist/server/index.js",
-  `${customerAccess}\n${domain}\n${buenosAires}\n${settings}\n${staffMail}\n${operations}\n${api}\n${handler}\n${wrapper}`,
+  `${customerAccess}\n${domain}\n${buenosAires}\n${settings}\n${ceoViews}\n${staffMail}\n${operations}\n${api}\n${handler}\n${wrapper}`,
 );
 console.log(`Worker listo: ${Object.keys(files).length} archivos del sitio y API de chat.`);

@@ -157,6 +157,166 @@ async function call(env, path, user, body, method) {
   const response = await handleMarket(req(path, user, body, method), env);
   return { status: response.status, data: await response.json() };
 }
+async function viewCall(env, path, user, cookie, body, method) {
+  const request = req(path, user, body, method);
+  if (cookie) request.headers.set("cookie", cookie);
+  return handleMarket(request, env);
+}
+async function openView(env, role, accountId = null) {
+  const response = await viewCall(env, "/ceo/view", "ceo", null, { role, accountId }, "POST");
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.match(response.headers.get("set-cookie"), /HttpOnly; SameSite=Lax; Max-Age=28800; Secure/);
+  return response.headers.get("set-cookie").split(";")[0];
+}
+
+test("only the verified CEO can open dashboard views; forged view cookies grant no permissions", async () => {
+  const { env } = setup();
+  const cookie =
+    "__Host-oficios_ceo_view=" +
+    encodeURIComponent(JSON.stringify({ role: "superadmin", accountId: null }));
+  for (const user of [null, "client", "super", "admin"]) {
+    assert.equal(
+      (await viewCall(env, "/ceo/view", user, cookie, { role: "superadmin" }, "POST")).status,
+      403,
+    );
+    assert.equal((await viewCall(env, "/ceo/views?role=profesional", user, cookie)).status, 403);
+    const session = await (await viewCall(env, "/session", user, cookie)).json();
+    assert.equal(session.ceoPreview, null);
+    assert.equal(session.staffRole, null);
+  }
+  assert.equal(
+    (await viewCall(env, "/ceo/view", "ceo", null, { role: "ceo" }, "POST")).status,
+    400,
+  );
+  assert.equal(
+    (await viewCall(env, "/ceo/view", "ceo", null, { role: "empresa" }, "POST")).status,
+    400,
+  );
+  for (const role of ["superadmin", "admin"]) {
+    const selection = await openView(env, role);
+    const session = await (await viewCall(env, "/session", "ceo", selection)).json();
+    assert.equal(session.staffRole, role);
+    assert.equal(session.ceoPreview.role, role);
+    assert.equal(session.ceoPreview.ownerEmail, "ceo@example.test");
+    assert.equal((await viewCall(env, "/staff/operations/summary", "ceo", selection)).status, 200);
+    assert.equal(
+      (await viewCall(env, "/staff/operations/system", "ceo", selection)).status,
+      role === "superadmin" ? 200 : 403,
+    );
+  }
+  assert.equal((await call(env, "/session", "ceo")).data.staffRole, "ceo");
+});
+
+test("CEO views inspect real customer and professional panels without writing data or changing roles", async () => {
+  const { db, env } = setup();
+  await register(env, "client");
+  await register(env, "other-client");
+  await register(env, "pro", "profesional");
+  await attachProfilePhoto(db, env, "pro");
+  db.prepare("UPDATE accounts SET verification='aprobado' WHERE user_id='pro'").run();
+  const own = await call(env, "/jobs", "client", details);
+  await call(env, "/jobs", "other-client", { ...details, service: "Otra solicitud privada" });
+  const before = db.prepare("SELECT COUNT(*) n FROM accounts").get().n;
+  const jobBefore = db.prepare("SELECT body FROM jobs WHERE id=?").get(own.data.job.id).body;
+  const clientCookie = await openView(env, "cliente", "client");
+  const clientSession = await (await viewCall(env, "/session", "ceo", clientCookie)).json();
+  assert.equal(clientSession.account.id, "client");
+  assert.equal(clientSession.account.kind, "cliente");
+  const jobs = await (await viewCall(env, "/jobs?scope=client", "ceo", clientCookie)).json();
+  assert.deepEqual(
+    jobs.jobs.map((j) => j.id),
+    [own.data.job.id],
+  );
+  assert.equal(jobs.jobs[0].address, details.address);
+  const proCookie = await openView(env, "profesional", "pro");
+  const proSession = await (await viewCall(env, "/session", "ceo", proCookie)).json();
+  assert.equal(proSession.account.id, "pro");
+  assert.equal(proSession.staffRole, null);
+  const proposals = await (await viewCall(env, "/jobs?scope=provider", "ceo", proCookie)).json();
+  assert.equal(proposals.jobs.length, 2);
+  assert.ok(proposals.jobs.every((j) => !j.address && !j.contact));
+  const catalog = await (
+    await viewCall(env, "/ceo/views?role=profesional&search=pro%40example.test", "ceo", proCookie)
+  ).json();
+  assert.deepEqual(
+    catalog.accounts.map((a) => a.id),
+    ["pro"],
+  );
+  assert.equal(
+    (
+      await viewCall(
+        env,
+        "/ceo/view",
+        "ceo",
+        proCookie,
+        { role: "profesional", accountId: "client" },
+        "POST",
+      )
+    ).status,
+    404,
+  );
+  for (const [path, method] of [
+    ["/jobs", "POST"],
+    ["/account", "POST"],
+    ["/upload", "POST"],
+    ["/staff/invite", "POST"],
+    ["/ceo/config", "PUT"],
+    ["/ceo/regions/mercedes-ba/status", "PATCH"],
+  ]) {
+    const denied = await viewCall(
+      env,
+      path,
+      "ceo",
+      proCookie,
+      { active: false, version: 0 },
+      method,
+    );
+    assert.equal(denied.status, 403, path);
+    assert.match((await denied.json()).error, /solo lectura/);
+  }
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM accounts").get().n, before);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM jobs").get().n, 2);
+  assert.equal(db.prepare("SELECT body FROM jobs WHERE id=?").get(own.data.job.id).body, jobBefore);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM staff").get().n, 0);
+  assert.equal(db.prepare("SELECT version FROM market_settings").get().version, 0);
+});
+
+test("empty CEO previews create no demo records and can always return to CEO", async () => {
+  const { db, env } = setup();
+  for (const role of ["profesional", "cliente"]) {
+    const cookie = await openView(env, role);
+    const session = await (await viewCall(env, "/session", "ceo", cookie)).json();
+    assert.equal(session.ceoPreview.empty, true);
+    assert.equal(session.account.kind, role);
+    assert.equal(
+      marketPageAllowed(role === "profesional" ? "/panel-profesional" : "/mis-solicitudes", {
+        account: { kind: role },
+        ceoPreview: session.ceoPreview,
+      }),
+      true,
+    );
+    assert.equal(
+      marketPageAllowed("/ceo", { staffRole: null, ceoPreview: session.ceoPreview }),
+      true,
+    );
+    for (const path of [
+      "/jobs",
+      "/addresses",
+      ...(role === "profesional" ? ["/works", "/entitlements", "/referrals"] : []),
+    ])
+      assert.equal((await viewCall(env, path, "ceo", cookie)).status, 200, path);
+    const exit = await viewCall(env, "/ceo/view/exit", "ceo", cookie, {}, "POST");
+    assert.equal(exit.status, 303);
+    assert.equal(exit.headers.get("location"), "/ceo");
+    assert.match(exit.headers.get("set-cookie"), /Max-Age=0/);
+    const foreign = req("/ceo/view/exit", "ceo", {}, "POST");
+    foreign.headers.set("cookie", cookie);
+    foreign.headers.set("origin", "https://other.example");
+    assert.equal((await handleMarket(foreign, env)).status, 403);
+  }
+  for (const table of ["accounts", "staff", "jobs", "referral_codes", "commercial_audit"])
+    assert.equal(db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n, 0, table);
+});
 test("registration persists per platform identity without creating admin roles or reusing browser examples", async () => {
   const { db, env } = setup();
   assert.equal((await call(env, "/account", null, profile())).status, 401);

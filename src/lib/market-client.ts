@@ -21,6 +21,13 @@ export type MarketSession = {
   account: MarketAccount | null;
   staffRole: "ceo" | "superadmin" | "admin" | null;
   staffAccessPaused?: boolean;
+  ceoPreview?: {
+    role: "superadmin" | "admin" | "profesional" | "cliente";
+    accountId: string | null;
+    accountName: string | null;
+    ownerEmail: string;
+    empty: boolean;
+  } | null;
 };
 export type MarketJob = {
   id: string;

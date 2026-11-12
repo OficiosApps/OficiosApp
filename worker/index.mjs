@@ -13,6 +13,24 @@ export default {
         { database: Boolean(env?.DB), files: Boolean(env?.BUCKET) },
         { headers: { "cache-control": "no-store" } },
       );
+    if (
+      url.pathname === "/api/chat" &&
+      !["GET", "HEAD"].includes(request.method) &&
+      (request.headers.get("cookie") ?? "").includes("oficios_ceo_view=")
+    ) {
+      try {
+        if ((await marketViewer(request, env)).ceoPreview)
+          return Response.json(
+            {
+              error:
+                "La revisión de paneles es de solo lectura. Volvé al panel CEO para usar Ayuda IA.",
+            },
+            { status: 403, headers: { "cache-control": "no-store" } },
+          );
+      } catch {
+        return Response.json({ error: "No pudimos verificar el acceso." }, { status: 403 });
+      }
+    }
     if (url.pathname === "/api/chat" || url.pathname === "/api/chat/status")
       return handleChat(request, env);
     if (!["GET", "HEAD"].includes(request.method))

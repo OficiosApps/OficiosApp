@@ -1,4 +1,5 @@
 import { OperationsView } from "@/components/staff-operations";
+import { CeoDashboardAccess } from "@/components/ceo-dashboard-access";
 import { ManagementLayout } from "@/components/management-layout";
 import { StaffWorkspace } from "@/components/market-staff";
 import { toast } from "sonner";
@@ -42,6 +43,9 @@ export function LiveCeoPanel() {
         <Button variant="outline" size="sm" onClick={() => void refresh()}>
           Actualizar panel
         </Button>
+        <Button size="sm" onClick={() => setTab("vistas")}>
+          Revisar otros paneles
+        </Button>
       </div>
       <MarketErrorText error={error} />
       {loading ? (
@@ -77,12 +81,16 @@ export function LiveCeoPanel() {
             <Tabs value={tab} onValueChange={setTab}>
               <TabsList className="h-auto flex-wrap justify-start gap-1">
                 <TabsTrigger value="mapa">Mapa de pedidos</TabsTrigger>
+                <TabsTrigger value="vistas">Ver otros paneles</TabsTrigger>
                 <TabsTrigger value="ciudades">Ciudades</TabsTrigger>
                 <TabsTrigger value="gestion">Planes, referidos y zonas</TabsTrigger>
                 <TabsTrigger value="equipo">Equipo e invitaciones</TabsTrigger>
                 <TabsTrigger value="operacion">Operación</TabsTrigger>
                 <TabsTrigger value="historial">Historial de cambios</TabsTrigger>
               </TabsList>
+              <TabsContent value="vistas" className="mt-6">
+                <CeoDashboardAccess />
+              </TabsContent>
               <TabsContent value="ciudades" className="mt-6">
                 <CitySwitches data={data} onSaved={refresh} />
               </TabsContent>

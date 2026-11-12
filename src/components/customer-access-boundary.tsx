@@ -8,6 +8,7 @@ import { LiveCeoPanel } from "@/components/market-ceo";
 import { LiveStaffPanel } from "@/components/market-staff";
 import { LivePlans } from "@/components/market-plans";
 import { Button } from "@/components/ui/button";
+import { CeoDashboardAccess } from "@/components/ceo-dashboard-access";
 export function CustomerAccessBoundary() {
   const { pathname } = useLocation();
   const { session, loading, error } = useMarket();
@@ -25,7 +26,11 @@ export function CustomerAccessBoundary() {
       </MarketLayout>
     );
   if (pathname.startsWith("/ceo"))
-    return session.staffRole === "ceo" ? (
+    return session.ceoPreview ? (
+      <MarketLayout title="Revisión de paneles">
+        <CeoDashboardAccess />
+      </MarketLayout>
+    ) : session.staffRole === "ceo" ? (
       <LiveCeoPanel />
     ) : (
       <MarketLayout title="Acceso restringido">

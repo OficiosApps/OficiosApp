@@ -33,6 +33,7 @@ import {
   rewardReferralStatements,
   handleCeo,
 } from "./market-settings.mjs";
+import { applyCeoView, handleCeoView } from "./ceo-views.mjs";
 const marketJson = (value, status = 200) =>
   Response.json(value, {
     status,
@@ -185,10 +186,10 @@ export async function marketViewer(request, env) {
           .bind(identity.id)
           .first()
       )?.role ?? null;
-  return { identity, account, staffRole };
+  return applyCeoView(request, env, { identity, account, staffRole });
 }
 export function marketPageAllowed(path, viewer) {
-  if (/^\/ceo(\/|$)/.test(path)) return viewer.staffRole === "ceo";
+  if (/^\/ceo(\/|$)/.test(path)) return viewer.staffRole === "ceo" || Boolean(viewer.ceoPreview);
   if (/^\/planes-profesionales(\/|$)/.test(path)) return viewer.account?.kind === "profesional";
   if (/^\/(admin|superadmin|equipo)(\/|$)/.test(path))
     return (
@@ -256,6 +257,13 @@ export async function handleMarket(request, env) {
     const viewer = await marketViewer(request, env);
     if (request.method !== "GET" && request.method !== "HEAD")
       requireMarket(request.headers.get("origin") === url.origin, "Origen no permitido.", 403);
+    const ceoViewResponse = await handleCeoView(request, env, viewer, marketBody);
+    if (ceoViewResponse) return ceoViewResponse;
+    requireMarket(
+      !viewer.ceoPreview || ["GET", "HEAD"].includes(request.method),
+      "Estás revisando un panel en modo de solo lectura. Volvé al panel CEO para realizar cambios.",
+      403,
+    );
     if (path === "/api/market/session" && request.method === "GET")
       return marketJson({
         authenticated: Boolean(viewer.identity),
@@ -277,6 +285,7 @@ export async function handleMarket(request, env) {
             }
           : null,
         staffRole: viewer.staffRole,
+        ceoPreview: viewer.ceoPreview ?? null,
         staffAccessPaused: viewer.identity
           ? Boolean(
               (
@@ -1180,7 +1189,7 @@ export async function handleMarket(request, env) {
         else
           rows = await marketRows(
             env.DB.prepare(
-              'SELECT body,version FROM jobs WHERE professional_id = ? OR (category = ? AND city_id = ?) OR json_extract(body, "$.assignment.userId") = ? ORDER BY created_at DESC LIMIT 200',
+              "SELECT body,version FROM jobs WHERE professional_id = ? OR (category = ? AND city_id = ?) OR json_extract(body, '$.assignment.userId') = ? ORDER BY created_at DESC LIMIT 200",
             ).bind(account.user_id, account.trade, account.city_id, account.user_id),
           );
         return marketJson({

@@ -156,6 +156,8 @@ Las pruebas OAuth usan claves locales y respuestas simuladas. No llaman a Google
 
 ## Operación y límites
 
+El CEO puede abrir **Revisar otros paneles** para recorrer superadministración, administración, profesionales y clientes. La revisión es de solo lectura, permite seleccionar cuentas reales y mantiene las vistas vacías en memoria sin insertar usuarios de prueba. La identidad CEO se verifica en el servidor antes de aplicar cualquier vista; una cookie de revisión nunca otorga un rol. **Volver al panel CEO** restaura la vista habitual, y cerrar sesión también borra la selección.
+
 La cobertura inicial incluye los 135 partidos de la provincia de Buenos Aires, con nombres y centros de GeoRef oficial. En registro, pedidos y direcciones se elige el partido; la localidad se indica junto con la dirección. CABA conserva su estado propio.
 
 La migración `0005_buenos_aires_coverage.sql` habilita esta cobertura una sola vez en instalaciones existentes. Conserva los IDs y centros anteriores, los planes, los referidos y las demás provincias, y deja constancia en el historial comercial. Las bajas posteriores mediante los switches del CEO se respetan al reiniciar o volver a desplegar. No editar migraciones ya aplicadas.

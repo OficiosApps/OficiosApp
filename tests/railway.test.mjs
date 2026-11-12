@@ -491,6 +491,11 @@ test("switching Google accounts revokes the wrong session and preserves the staf
   assert.equal(logout.status, 303);
   assert.equal(logout.headers.get("location"), choose);
   assert.match(logout.headers.getSetCookie()[0], /Max-Age=0/);
+  assert.ok(
+    logout.headers
+      .getSetCookie()
+      .some((value) => value.startsWith("__Host-oficios_ceo_view=") && value.includes("Max-Age=0")),
+  );
   assert.equal(auth.identity(identityRequest), null);
   const fresh = await auth.handle(new Request(origin + logout.headers.get("location")));
   assert.equal(fresh.status, 303);
