@@ -1377,3 +1377,89 @@ test("mail connection check distinguishes an unverified sender and a disabled tr
     assert.equal(response.data.code, expected);
   }
 });
+
+test("an invitation takes the invited identity through acceptance and immediately into the creator's team", async () => {
+  const { env, db } = setup();
+  const invite = await call(env, "/staff/invite", "ceo", { email: "super@example.test" });
+  assert.equal((await call(env, "/invites/preview?id=" + invite.data.id, null)).status, 401);
+  const wrong = await call(env, "/invites/preview?id=" + invite.data.id, "ceo");
+  assert.equal(wrong.status, 200);
+  assert.equal(wrong.data.matchesEmail, false);
+  assert.equal(wrong.data.canAccept, false);
+  assert.equal(wrong.data.email, null);
+  assert.ok(!JSON.stringify(wrong.data).includes("super@example.test"));
+  assert.equal((await call(env, "/invites/accept", "ceo", { id: invite.data.id })).status, 403);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM staff").get().n, 0);
+  assert.equal((await call(env, "/staff", "ceo")).data.team.length, 0);
+  const preview = await call(env, "/invites/preview?id=" + invite.data.id, "super");
+  assert.equal(preview.data.canAccept, true);
+  assert.equal(preview.data.role, "superadmin");
+  const accepted = await call(env, "/invites/accept", "super", { id: invite.data.id, role: "ceo" });
+  assert.equal(accepted.status, 200);
+  assert.equal(accepted.data.role, "superadmin");
+  assert.equal(accepted.data.next, "/superadmin");
+  const team = (await call(env, "/staff", "ceo")).data.team;
+  assert.equal(team.length, 1);
+  assert.equal(team[0].email, "super@example.test");
+  assert.equal(team[0].role, "superadmin");
+  assert.equal((await call(env, "/ceo/config", "super")).status, 403);
+  const repeated = (await call(env, "/invites/preview?id=" + invite.data.id, "super")).data;
+  assert.equal(repeated.status, "accepted");
+  assert.equal(repeated.acceptedByYou, true);
+  assert.equal(repeated.canAccept, false);
+  assert.equal((await call(env, "/invites/accept", "super", { id: invite.data.id })).status, 403);
+  assert.equal((await call(env, "/staff", "ceo")).data.team.length, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM accounts").get().n, 0);
+  const adminInvite = await call(env, "/staff/invite", "super", { email: "admin@example.test" });
+  const adminAccepted = await call(env, "/invites/accept", "admin", { id: adminInvite.data.id });
+  assert.equal(adminAccepted.data.role, "admin");
+  assert.equal(adminAccepted.data.next, "/admin");
+  assert.deepEqual(
+    (await call(env, "/staff", "ceo")).data.team.map((x) => x.role),
+    ["superadmin"],
+  );
+  assert.deepEqual(
+    (await call(env, "/staff", "super")).data.team.map((x) => x.role),
+    ["admin"],
+  );
+});
+
+test("expired invites and legacy invitations to CEO never consume a new membership", async () => {
+  const { env, db } = setup();
+  const invite = await call(env, "/staff/invite", "ceo", { email: "super@example.test" });
+  db.prepare("UPDATE staff_invites SET expires_at = 0 WHERE id = ?").run(invite.data.id);
+  assert.equal(
+    (await call(env, "/invites/preview?id=" + invite.data.id, "super")).data.status,
+    "expired",
+  );
+  assert.equal((await call(env, "/invites/accept", "super", { id: invite.data.id })).status, 403);
+  const legacyId = crypto.randomUUID();
+  db.prepare(
+    "INSERT INTO staff_invites(id,email,role,invited_by,expires_at,created_at) VALUES(?,?,?,?,?,?)",
+  ).run(legacyId, "ceo@example.test", "superadmin", "old-ceo", Date.now() + 3600000, Date.now());
+  const preview = await call(env, "/invites/preview?id=" + legacyId, "ceo");
+  assert.equal(preview.data.canAccept, false);
+  assert.equal((await call(env, "/invites/accept", "ceo", { id: legacyId })).status, 409);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM staff").get().n, 0);
+  assert.equal(
+    db.prepare("SELECT used_by FROM staff_invites WHERE id = ?").get(legacyId).used_by,
+    null,
+  );
+});
+
+test("two acceptance requests cannot consume an invitation without its unique staff membership", async () => {
+  const { env, db } = setup();
+  const invite = await call(env, "/staff/invite", "ceo", { email: "super@example.test" });
+  const results = await Promise.all([
+    call(env, "/invites/accept", "super", { id: invite.data.id }),
+    call(env, "/invites/accept", "super", { id: invite.data.id }),
+  ]);
+  assert.equal(results.filter((r) => r.status === 200).length, 1);
+  assert.ok(results.every((r) => [200, 403, 409].includes(r.status)));
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM staff").get().n, 1);
+  assert.equal(
+    db.prepare("SELECT used_by FROM staff_invites WHERE id = ?").get(invite.data.id).used_by,
+    "super",
+  );
+  assert.equal((await call(env, "/staff", "ceo")).data.team[0].email, "super@example.test");
+});

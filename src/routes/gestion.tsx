@@ -2,18 +2,18 @@ import { createFileRoute, Link, Navigate } from "@tanstack/react-router";
 import { z } from "zod";
 import { ShieldCheck, Wrench, ArrowLeft } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useMarket } from "@/hooks/use-market";
+import { useMarket, useRemote } from "@/hooks/use-market";
 import { managementHome } from "@/lib/management-access";
 import { marketApi } from "@/lib/market-client";
 import { MarketErrorText, MarketNotice } from "@/components/market-common";
 import { Button } from "@/components/ui/button";
 export const Route = createFileRoute("/gestion")({
-  validateSearch: z.object({ invitacion: z.string().uuid().optional().catch(undefined) }),
+  validateSearch: z.object({ invitacion: z.string().max(200).optional().catch("invalid") }),
   head: () => ({
     meta: [
       { title: "Acceso al equipo | Oficios" },
       { name: "robots", content: "noindex, nofollow" },
-      { name: "referrer", content: "no-referrer" },
+      { name: "referrer", content: "strict-origin" },
     ],
   }),
   component: ManagementEntry,
@@ -23,13 +23,14 @@ function ManagementEntry() {
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => setHydrated(true), []);
   const invitacion = hydrated ? requestedInvitation : undefined;
-  const { session, loading, error, refresh } = useMarket();
-  const [busy, setBusy] = useState(false),
-    [issue, setIssue] = useState("");
+  const { session, loading, error } = useMarket();
+  const hasInvitation = requestedInvitation !== undefined;
   const home = managementHome(session.staffRole);
-  if (!loading && home) return <Navigate to={home} replace />;
-  const returnTo = invitacion
-    ? `/gestion?invitacion=${encodeURIComponent(invitacion)}`
+  // An invitation always takes priority over the browser's existing staff session.
+  if (hydrated && !loading && !error && !hasInvitation && home)
+    return <Navigate to={home} replace />;
+  const returnTo = hasInvitation
+    ? `/gestion?invitacion=${encodeURIComponent(invitacion ?? requestedInvitation ?? "invalid")}`
     : "/gestion";
   return (
     <div className="min-h-screen bg-secondary/30">
@@ -63,9 +64,9 @@ function ManagementEntry() {
         </section>
         <section className="surface-panel space-y-5 p-6 sm:p-8">
           <h2 className="font-display text-2xl font-semibold">
-            {invitacion ? "Tenés una invitación al equipo" : "Ingresar a gestión"}
+            {invitacion !== undefined ? "Tenés una invitación al equipo" : "Ingresar a gestión"}
           </h2>
-          <MarketErrorText error={error || issue} />
+          <MarketErrorText error={error} />
           {loading ? (
             <MarketNotice>Comprobando tu acceso…</MarketNotice>
           ) : !session.authenticated ? (
@@ -85,47 +86,25 @@ function ManagementEntry() {
               <p className="break-all text-sm text-muted-foreground">
                 Ingresaste como <strong>{session.identity?.email}</strong>.
               </p>
-              {invitacion ? (
-                <>
-                  <p className="text-sm text-muted-foreground">
-                    Aceptá la invitación para activar tu acceso. Sólo funciona con el correo al que
-                    fue enviada.
-                  </p>
-                  <Button
-                    className="w-full"
-                    disabled={busy}
-                    onClick={async () => {
-                      setBusy(true);
-                      setIssue("");
-                      try {
-                        await marketApi("/invites/accept", {
-                          method: "POST",
-                          body: JSON.stringify({ id: invitacion }),
-                        });
-                        await refresh();
-                      } catch (cause) {
-                        setIssue(
-                          cause instanceof Error
-                            ? cause.message
-                            : "No se pudo aceptar la invitación.",
-                        );
-                      } finally {
-                        setBusy(false);
-                      }
-                    }}
-                  >
-                    {busy ? "Activando acceso…" : "Aceptar invitación y entrar"}
-                  </Button>
-                </>
+              {hasInvitation ? (
+                hydrated && invitacion !== undefined ? (
+                  <InvitationAcceptance id={invitacion} returnTo={returnTo} />
+                ) : (
+                  <MarketNotice>Comprobando invitación…</MarketNotice>
+                )
               ) : (
                 <MarketNotice>
                   Este correo todavía no tiene acceso al equipo. Abrí el enlace de tu invitación o
                   pedí una al responsable correspondiente.
                 </MarketNotice>
               )}
-              <form method="post" action="/auth/logout">
+              <form
+                method="post"
+                target="_top"
+                action={`/auth/logout?return_to=${encodeURIComponent(`/auth/google?return_to=${encodeURIComponent(returnTo)}`)}`}
+              >
                 <Button type="submit" variant="outline" className="w-full">
-                  Salir para usar otra cuenta
+                  Salir y elegir otra cuenta de Google
                 </Button>
               </form>
             </>
@@ -135,6 +114,102 @@ function ManagementEntry() {
           </p>
         </section>
       </main>
+    </div>
+  );
+}
+
+type InvitationPreview = {
+  role: "superadmin" | "admin";
+  maskedEmail: string;
+  email: string | null;
+  matchesEmail: boolean;
+  status: "pending" | "accepted" | "expired";
+  acceptedByYou: boolean;
+  canAccept: boolean;
+  message: string;
+};
+function InvitationAcceptance({ id, returnTo }: { id: string; returnTo: string }) {
+  const { session } = useMarket();
+  // A new identity requires a fresh preview, including after a Google account change.
+  const path = `/invites/preview?id=${encodeURIComponent(id)}&account=${encodeURIComponent(session.identity?.email || "")}`;
+  const { data, loading, error, refresh } = useRemote<InvitationPreview>(path);
+  const [busy, setBusy] = useState(false),
+    [issue, setIssue] = useState("");
+  const roleLabel = data?.role === "superadmin" ? "superadministrador" : "administrador";
+  const home = managementHome(session.staffRole);
+  async function accept() {
+    setBusy(true);
+    setIssue("");
+    try {
+      const result = await marketApi<{ role: string; next: string }>("/invites/accept", {
+        method: "POST",
+        body: JSON.stringify({ id }),
+      });
+      const next =
+        result.role === "superadmin" ? "/superadmin" : result.role === "admin" ? "/admin" : null;
+      if (!next || result.next !== next)
+        throw new Error("No pudimos confirmar el panel asignado. Actualizá el acceso.");
+      // Reload the authorized page so no cached role from another account can select the panel.
+      window.location.assign(next);
+    } catch (cause) {
+      setIssue(cause instanceof Error ? cause.message : "No se pudo aceptar la invitación.");
+      setBusy(false);
+      await refresh();
+    }
+  }
+  return (
+    <div className="space-y-4">
+      <MarketErrorText error={error || issue} />
+      {loading ? (
+        <MarketNotice>Comprobando el correo y la invitación…</MarketNotice>
+      ) : (
+        data && (
+          <>
+            <div className="rounded-xl bg-secondary/70 p-4 text-sm">
+              <p className="font-semibold">Invitación de {roleLabel}</p>
+              <p className="mt-2 text-muted-foreground">
+                Correo invitado: <strong>{data.email || data.maskedEmail}</strong>
+              </p>
+              <p className="mt-3">{data.message}</p>
+            </div>
+            {data.canAccept && (
+              <Button className="w-full" disabled={busy} onClick={() => void accept()}>
+                {busy ? "Activando acceso…" : "Aceptar invitación y entrar"}
+              </Button>
+            )}
+            {data.acceptedByYou && home && (
+              <Button asChild className="w-full">
+                <Link to={home}>
+                  Entrar a mi panel de{" "}
+                  {session.staffRole === "superadmin"
+                    ? "superadministrador"
+                    : session.staffRole === "admin"
+                      ? "administrador"
+                      : "CEO"}
+                </Link>
+              </Button>
+            )}
+            {!data.matchesEmail && (
+              <Button asChild className="w-full">
+                <a href={`/auth/google?return_to=${encodeURIComponent(returnTo)}`} target="_top">
+                  Elegir la cuenta invitada en Google
+                </a>
+              </Button>
+            )}
+            {session.staffRole && !data.acceptedByYou && (
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Tu sesión actual es de{" "}
+                {session.staffRole === "ceo"
+                  ? "CEO"
+                  : session.staffRole === "superadmin"
+                    ? "superadministrador"
+                    : "administrador"}
+                . Abrir este enlace no cambia ese rol ni acepta la invitación por otra persona.
+              </p>
+            )}
+          </>
+        )
+      )}
     </div>
   );
 }

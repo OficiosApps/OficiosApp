@@ -457,6 +457,48 @@ export async function handleMarket(request, env) {
       ]);
       return marketJson({ ok: true }, 201);
     }
+    if (path === "/api/market/invites/preview" && request.method === "GET") {
+      requireMarket(viewer.identity, "Iniciá sesión con el correo invitado.", 401);
+      const id = url.searchParams.get("id");
+      requireMarket(
+        typeof id === "string" && /^[a-f0-9-]{36}$/i.test(id),
+        "El enlace de invitación no es válido.",
+      );
+      const invite = await env.DB.prepare("SELECT * FROM staff_invites WHERE id = ?")
+        .bind(id)
+        .first();
+      requireMarket(invite, "La invitación no existe o ya no está disponible.", 404);
+      const matchesEmail = invite.email === viewer.identity.email;
+      const status = invite.used_by
+        ? "accepted"
+        : invite.expires_at <= Date.now()
+          ? "expired"
+          : "pending";
+      const acceptedByYou = matchesEmail && invite.used_by === viewer.identity.id;
+      const [local, domain] = invite.email.split("@");
+      return marketJson({
+        role: invite.role,
+        maskedEmail: `${local.slice(0, 2)}***@${domain}`,
+        email: matchesEmail ? invite.email : null,
+        matchesEmail,
+        status,
+        acceptedByYou,
+        canAccept: status === "pending" && matchesEmail && !viewer.staffRole,
+        message: !matchesEmail
+          ? "Este enlace fue enviado a otro correo. Elegí en Google la cuenta que recibió la invitación."
+          : acceptedByYou
+            ? "Ya aceptaste esta invitación. Podés entrar a tu panel."
+            : status === "accepted"
+              ? "Esta invitación ya fue utilizada."
+              : status === "expired"
+                ? "La invitación venció. Pedile a quien te invitó que cree una nueva."
+                : viewer.staffRole === "ceo"
+                  ? "Estás usando la cuenta CEO. Elegí la cuenta invitada para activar su acceso de superadministrador."
+                  : viewer.staffRole
+                    ? "Esta cuenta ya tiene un acceso de gestión. No se modifica su rol mediante este enlace."
+                    : "Confirmá la invitación para activar tu acceso al equipo.",
+      });
+    }
     if (path === "/api/market/invites/accept" && request.method === "POST") {
       requireMarket(viewer.identity, "Iniciá sesión.", 401);
       const data = await marketBody(request),
@@ -471,15 +513,30 @@ export async function handleMarket(request, env) {
         "La invitación no es válida para esta cuenta.",
         403,
       );
-      await env.DB.batch([
+      requireMarket(
+        !viewer.staffRole,
+        "Esta cuenta ya tiene un rol de gestión. Ingresá con el correo invitado; el enlace no cambia tu rol actual.",
+        409,
+      );
+      const now = Date.now();
+      const changes = await env.DB.batch([
         env.DB.prepare(
           "INSERT INTO staff (user_id,role,invited_by,created_at) SELECT ?,role,invited_by,? FROM staff_invites WHERE id = ? AND used_by IS NULL AND expires_at > ?",
-        ).bind(viewer.identity.id, Date.now(), invite.id, Date.now()),
+        ).bind(viewer.identity.id, now, invite.id, now),
         env.DB.prepare(
-          "UPDATE staff_invites SET used_by = ? WHERE id = ? AND used_by IS NULL",
-        ).bind(viewer.identity.id, invite.id),
+          "UPDATE staff_invites SET used_by = ? WHERE id = ? AND used_by IS NULL AND expires_at > ? AND EXISTS (SELECT 1 FROM staff WHERE user_id = ? AND role = staff_invites.role AND invited_by = staff_invites.invited_by)",
+        ).bind(viewer.identity.id, invite.id, now, viewer.identity.id),
       ]);
-      return marketJson({ ok: true });
+      requireMarket(
+        changes.every((change) => change.meta.changes === 1),
+        "La invitación cambió o venció. Volvé a abrir el enlace.",
+        409,
+      );
+      return marketJson({
+        ok: true,
+        role: invite.role,
+        next: invite.role === "superadmin" ? "/superadmin" : "/admin",
+      });
     }
     if (path.startsWith("/api/market/staff")) {
       requireMarket(canReview(viewer), "No tenés permisos de administración.", 403);
@@ -531,8 +588,8 @@ export async function handleMarket(request, env) {
               ? []
               : await marketRows(
                   env.DB.prepare(
-                    "SELECT s.user_id,s.role,s.created_at,(SELECT i.email FROM staff_invites i WHERE i.used_by = s.user_id ORDER BY i.created_at DESC LIMIT 1) AS email FROM staff s WHERE s.invited_by = ? ORDER BY s.created_at DESC LIMIT 100",
-                  ).bind(viewer.identity.id),
+                    "SELECT s.user_id,s.role,s.created_at,(SELECT i.email FROM staff_invites i WHERE i.used_by = s.user_id ORDER BY i.created_at DESC LIMIT 1) AS email FROM staff s WHERE s.invited_by = ? AND s.role = ? ORDER BY s.created_at DESC LIMIT 100",
+                  ).bind(viewer.identity.id, viewer.staffRole === "ceo" ? "superadmin" : "admin"),
                 ),
           deliveryMessages: viewer.staffRole === "admin" ? null : staffMailMessages,
           invites:

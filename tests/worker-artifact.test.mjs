@@ -1,3 +1,4 @@
+import { runInNewContext } from "node:vm";
 import assert from "node:assert/strict";
 import test from "node:test";
 import worker from "../dist/server/index.js";
@@ -116,7 +117,7 @@ test("team entry is public, separate from customer login, and does not grant int
     {},
   );
   assert.equal(response.status, 200);
-  assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(response.headers.get("referrer-policy"), "strict-origin");
   const html = await response.text();
   assert.ok(html.includes("Equipo de Oficios"));
   assert.ok(html.includes("Ingresar a gestión"));
@@ -125,4 +126,40 @@ test("team entry is public, separate from customer login, and does not grant int
   const restricted = await worker.fetch(new Request("https://example.com/superadmin"), {});
   assert.equal(restricted.status, 403);
   assert.match(await restricted.text(), /href="\/gestion"/);
+});
+
+test("the PWA leaves Google authentication and logout redirects to the browser", async () => {
+  const script = await (await worker.fetch(new Request("https://example.com/sw.js"), {})).text();
+  const handlers = new Map();
+  runInNewContext(script, {
+    self: {
+      location: { origin: "https://example.com" },
+      addEventListener: (name, fn) => handlers.set(name, fn),
+    },
+    URL,
+    fetch: async () => new Response("network"),
+  });
+  for (const path of [
+    "/auth/google?return_to=%2Fgestion",
+    "/auth/google/callback?code=example&state=example",
+    "/auth/logout",
+    "/api/market/session",
+  ]) {
+    let intercepted = false;
+    handlers.get("fetch")({
+      request: { url: "https://example.com" + path, method: "GET", mode: "navigate" },
+      respondWith() {
+        intercepted = true;
+      },
+    });
+    assert.equal(intercepted, false, path);
+  }
+  let navigation;
+  handlers.get("fetch")({
+    request: { url: "https://example.com/gestion", method: "GET", mode: "navigate" },
+    respondWith(promise) {
+      navigation = promise;
+    },
+  });
+  assert.equal(await (await navigation).text(), "network");
 });

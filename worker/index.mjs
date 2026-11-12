@@ -69,7 +69,7 @@ export default {
           : "no-cache",
       "x-content-type-options": "nosniff",
       "referrer-policy":
-        pathname === "/gestion" ? "no-referrer" : "strict-origin-when-cross-origin",
+        pathname === "/gestion" ? "strict-origin" : "strict-origin-when-cross-origin",
     };
     if (pathname === "/sw.js") headers["service-worker-allowed"] = "/";
     const bytes =

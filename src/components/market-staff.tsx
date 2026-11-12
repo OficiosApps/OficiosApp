@@ -360,12 +360,17 @@ export function StaffWorkspace({ section }: { section: "team" | "reviews" | "met
                   </div>
                 </section>
                 <section className="surface-panel space-y-4 p-6">
-                  <h2 className="flex items-center gap-2 font-display text-xl font-semibold">
-                    <Users className="size-5 text-primary" />
-                    {session.staffRole === "ceo"
-                      ? "Tus superadministradores"
-                      : "Tus administradores"}
-                  </h2>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <h2 className="flex items-center gap-2 font-display text-xl font-semibold">
+                      <Users className="size-5 text-primary" />
+                      {session.staffRole === "ceo"
+                        ? "Tus superadministradores"
+                        : "Tus administradores"}
+                    </h2>
+                    <Button variant="outline" size="sm" onClick={() => void refresh()}>
+                      Actualizar equipo
+                    </Button>
+                  </div>
                   {!data.team?.length ? (
                     <p className="text-sm text-muted-foreground">
                       Tu equipo aparecerá acá cuando acepte las invitaciones.

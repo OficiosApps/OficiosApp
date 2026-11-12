@@ -90,7 +90,10 @@ export function createAuth({
       const token = cookies(request)[sessionName];
       if (token)
         sqlite.prepare("DELETE FROM railway_sessions WHERE token_hash = ?").run(hash(token));
-      return redirect("/", cookie(sessionName, "", 0));
+      return redirect(
+        localReturn(url.searchParams.get("return_to") || "/", origin),
+        cookie(sessionName, "", 0),
+      );
     }
     if (!["/auth/google", "/auth/google/callback"].includes(url.pathname))
       return message("Ruta no encontrada.", 404);

@@ -236,7 +236,7 @@ test("Railway HTTP serves installable PWA and real APIs while rejecting forged C
   assert.equal((await call("/")).status, 200);
   const managementEntry = await call("/gestion?invitacion=00000000-0000-4000-8000-000000000001");
   assert.equal(managementEntry.status, 200);
-  assert.equal(managementEntry.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(managementEntry.headers.get("referrer-policy"), "strict-origin");
   const manifest = await (await call("/manifest.webmanifest")).json();
   assert.equal(manifest.display, "standalone");
   for (const icon of manifest.icons) assert.equal((await call(icon.src)).status, 200);
@@ -321,4 +321,49 @@ test("Railway requires persistent volume and a safe canonical origin", () => {
     configuredOrigin({ RAILWAY_PUBLIC_DOMAIN: "oficios.up.railway.app" }),
     "https://oficios.up.railway.app",
   );
+});
+
+test("switching Google accounts revokes the wrong session and preserves the staff invitation", async (t) => {
+  const { storage } = await fixture(t);
+  let nonce;
+  const auth = authFor(storage, {
+    fetcher: async () => Response.json({ id_token: await signedToken(nonce) }),
+  });
+  const login = await flow(auth);
+  nonce = login.target.searchParams.get("nonce");
+  const callback = await auth.handle(login.request);
+  const cookie = callback.headers
+    .getSetCookie()
+    .find((x) => x.startsWith("__Host-oficios_session="))
+    .split(";")[0];
+  const identityRequest = new Request(origin + "/", { headers: { cookie } });
+  assert.equal(auth.identity(identityRequest).email, "ceo@example.test");
+  const invitation = "/gestion?invitacion=" + crypto.randomUUID();
+  const choose = "/auth/google?return_to=" + encodeURIComponent(invitation);
+  const logout = await auth.handle(
+    new Request(origin + "/auth/logout?return_to=" + encodeURIComponent(choose), {
+      method: "POST",
+      headers: { origin, cookie },
+    }),
+  );
+  assert.equal(logout.status, 303);
+  assert.equal(logout.headers.get("location"), choose);
+  assert.match(logout.headers.getSetCookie()[0], /Max-Age=0/);
+  assert.equal(auth.identity(identityRequest), null);
+  const fresh = await auth.handle(new Request(origin + logout.headers.get("location")));
+  assert.equal(fresh.status, 303);
+  const google = new URL(fresh.headers.get("location"));
+  assert.equal(google.searchParams.get("prompt"), "select_account");
+  assert.notEqual(google.searchParams.get("state"), login.target.searchParams.get("state"));
+  assert.equal(
+    storage.sqlite.prepare("SELECT return_to FROM railway_oauth_flows").get().return_to,
+    invitation,
+  );
+  const unsafe = await auth.handle(
+    new Request(origin + "/auth/logout?return_to=https%3A%2F%2Fevil.example", {
+      method: "POST",
+      headers: { origin },
+    }),
+  );
+  assert.equal(unsafe.headers.get("location"), "/cuenta");
 });
