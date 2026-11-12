@@ -140,7 +140,7 @@ export function LiveAddresses() {
             <option value="comercio">Comercio</option>
             <option value="otra">Otra propiedad</option>
           </select>
-          <Label htmlFor="live-address-city">Ciudad</Label>
+          <Label htmlFor="live-address-city">Ciudad o partido</Label>
           <select
             id="live-address-city"
             value={cityId}
@@ -158,9 +158,10 @@ export function LiveAddresses() {
               </option>
             ))}
           </select>
-          <Label htmlFor="live-address-street">Dirección</Label>
+          <Label htmlFor="live-address-street">Dirección y localidad</Label>
           <Input
             id="live-address-street"
+            placeholder="Calle, número y localidad"
             required
             minLength={6}
             maxLength={200}

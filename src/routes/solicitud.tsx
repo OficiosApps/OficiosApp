@@ -362,19 +362,19 @@ function NuevaSolicitud() {
                         setLocation(null);
                       }}
                     />
-                    <Label htmlFor="dir">Dirección o esquina</Label>
+                    <Label htmlFor="dir">Dirección y localidad</Label>
                     <Input
                       id="dir"
                       value={direccion}
                       onChange={(e) => setDireccion(e.target.value)}
-                      placeholder="Av. 29 y calle 14, Centro"
+                      placeholder="Calle, número o esquina y localidad"
                     />
                     <p className="text-xs text-muted-foreground">
                       La dirección exacta sólo se comparte con el profesional que contrates.
                     </p>
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="request-city">Ciudad</Label>
+                    <Label htmlFor="request-city">Ciudad o partido</Label>
                     <select
                       id="request-city"
                       className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
@@ -395,6 +395,9 @@ function NuevaSolicitud() {
                         </option>
                       ))}
                     </select>
+                    <p className="text-xs text-muted-foreground">
+                      Elegí el partido de tu localidad e indicá la localidad en la dirección.
+                    </p>
                     {marketConfig && !activeCities.length && (
                       <p role="status" className="text-sm text-muted-foreground">
                         Por el momento no hay ciudades habilitadas para nuevos pedidos.

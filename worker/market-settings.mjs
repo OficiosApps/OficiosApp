@@ -6,6 +6,7 @@ import {
   marketProfilePhoto,
   marketPoint,
 } from "./market-domain.mjs";
+import { buenosAiresRegions } from "./buenos-aires-regions.mjs";
 export function defaultMarketConfig() {
   return {
     plans: [
@@ -57,27 +58,7 @@ export function defaultMarketConfig() {
         "Recibí presupuestos extra por recomendar profesionales que completen su alta y sean aprobados.",
     },
     regions: [
-      {
-        id: "mercedes-ba",
-        name: "Mercedes",
-        province: "Buenos Aires",
-        status: "activa",
-        center: { lat: -34.65, lng: -59.43 },
-      },
-      {
-        id: "lujan-ba",
-        name: "Luján",
-        province: "Buenos Aires",
-        status: "preparacion",
-        center: { lat: -34.57, lng: -59.1 },
-      },
-      {
-        id: "chivilcoy-ba",
-        name: "Chivilcoy",
-        province: "Buenos Aires",
-        status: "preparacion",
-        center: { lat: -34.9, lng: -60.02 },
-      },
+      ...buenosAiresRegions(),
       {
         id: "caba-ar",
         name: "Capital Federal (CABA)",
@@ -168,8 +149,8 @@ export function validateMarketConfig(input, previous) {
     "Revisá la recompensa y el máximo de referidos.",
   );
   requireMarket(
-    Array.isArray(input.regions) && input.regions.length >= 1 && input.regions.length <= 100,
-    "Podés gestionar hasta cien zonas.",
+    Array.isArray(input.regions) && input.regions.length >= 1 && input.regions.length <= 1000,
+    "Podés gestionar hasta mil zonas.",
   );
   const ids = new Set();
   const regions = input.regions.map((region) => {

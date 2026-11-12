@@ -163,7 +163,7 @@ export function MarketAccountPage({
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="account-city">Ciudad</Label>
+            <Label htmlFor="account-city">Ciudad o partido</Label>
             <select
               id="account-city"
               value={city}
@@ -181,6 +181,9 @@ export function MarketAccountPage({
                 </option>
               ))}
             </select>
+            <p className="text-xs text-muted-foreground">
+              Si tu localidad no aparece, elegí el partido al que pertenece.
+            </p>
             {marketConfig && !activeCities.length && (
               <p role="status" className="text-sm text-muted-foreground">
                 Por el momento no hay ciudades habilitadas para nuevos registros.
@@ -626,7 +629,7 @@ function EnableProfessionalServices() {
           </option>
         ))}
       </select>
-      <Label htmlFor="enable-city">Ciudad de trabajo</Label>
+      <Label htmlFor="enable-city">Ciudad o partido de trabajo</Label>
       <select
         id="enable-city"
         value={cityId}

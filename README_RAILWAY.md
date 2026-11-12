@@ -156,6 +156,10 @@ Las pruebas OAuth usan claves locales y respuestas simuladas. No llaman a Google
 
 ## Operación y límites
 
+La cobertura inicial incluye los 135 partidos de la provincia de Buenos Aires, con nombres y centros de GeoRef oficial. En registro, pedidos y direcciones se elige el partido; la localidad se indica junto con la dirección. CABA conserva su estado propio.
+
+La migración `0005_buenos_aires_coverage.sql` habilita esta cobertura una sola vez en instalaciones existentes. Conserva los IDs y centros anteriores, los planes, los referidos y las demás provincias, y deja constancia en el historial comercial. Las bajas posteriores mediante los switches del CEO se respetan al reiniciar o volver a desplegar. No editar migraciones ya aplicadas.
+
 Esta configuración utiliza una sola instancia con SQLite y archivos privados en el volumen. Para varias réplicas se necesita una base y almacenamiento compartidos. Configurá copias de seguridad del volumen y probá restaurarlas. No expongas /data mediante un servidor de archivos estáticos.
 
 Antes del lanzamiento comercial completá los datos legales del operador y la revisión jurídica de los términos, incluido el compromiso de resolución de reclamos en 60 días. El correo pqroficiosapp@gmail.com requiere atención humana; Ayuda IA no abre esos reclamos.

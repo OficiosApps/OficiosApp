@@ -4,6 +4,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
+import { readFileSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+import { buenosAiresRegions, buenosAiresDistricts } from "../worker/buenos-aires-regions.mjs";
+import { defaultMarketConfig } from "../worker/market-settings.mjs";
 import { generateKeyPair, exportJWK, createLocalJWKSet, SignJWT } from "jose";
 import { openStorage } from "../railway/storage.mjs";
 import { createApplication, configuredOrigin } from "../railway/server.mjs";
@@ -67,10 +72,112 @@ async function flow(auth) {
   };
 }
 
+test("Buenos Aires coverage migrates existing settings once, preserving history and later CEO pauses", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "oficios-ba-upgrade-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const old = new DatabaseSync(join(directory, "oficios.sqlite"));
+  old.exec(
+    "CREATE TABLE railway_migrations(name TEXT PRIMARY KEY, sha256 TEXT NOT NULL, applied_at INTEGER NOT NULL)",
+  );
+  for (const file of readdirSync(new URL("../drizzle/", import.meta.url))
+    .filter((n) => n.endsWith(".sql") && n < "0005")
+    .sort()) {
+    const sql = readFileSync(new URL("../drizzle/" + file, import.meta.url), "utf8");
+    old.exec(sql);
+    old
+      .prepare("INSERT INTO railway_migrations VALUES(?,?,?)")
+      .run("drizzle/" + file, createHash("sha256").update(sql).digest("hex"), 1);
+  }
+  const config = defaultMarketConfig();
+  config.plans[1].priceCents = 1550;
+  config.referrals.enabled = true;
+  config.referrals.rewardQuotes = 9;
+  config.regions = config.regions.filter((r) =>
+    ["mercedes-ba", "lujan-ba", "chivilcoy-ba", "caba-ar"].includes(r.id),
+  );
+  config.regions.find((r) => r.id === "lujan-ba").status = "pausada";
+  config.regions.find((r) => r.id === "chivilcoy-ba").status = "preparacion";
+  config.regions.find((r) => r.id === "mercedes-ba").center = { lat: -34.65, lng: -59.43 };
+  config.regions.push({
+    id: "custom-cordoba",
+    name: "Córdoba",
+    province: "Córdoba",
+    status: "preparacion",
+    center: { lat: -31.4, lng: -64.18 },
+  });
+  old
+    .prepare("INSERT INTO market_settings VALUES('commercial',?,7,'old-token','ceo',1)")
+    .run(JSON.stringify(config));
+  old.prepare("INSERT INTO staff VALUES('existing-admin','admin','existing-super',1)").run();
+  old.close();
+  let storage = openStorage(directory);
+  try {
+    const row = storage.sqlite
+      .prepare("SELECT * FROM market_settings WHERE setting_key='commercial'")
+      .get();
+    const migrated = JSON.parse(row.body);
+    assert.equal(row.version, 8);
+    assert.equal(migrated.regions.length, 137);
+    assert.equal(migrated.regions.filter((r) => r.province === "Buenos Aires").length, 135);
+    assert.equal(new Set(migrated.regions.map((r) => r.id)).size, 137);
+    assert.deepEqual(migrated.plans, config.plans);
+    assert.deepEqual(migrated.referrals, config.referrals);
+    assert.deepEqual(
+      migrated.regions.find((r) => r.id === "caba-ar"),
+      config.regions.find((r) => r.id === "caba-ar"),
+    );
+    assert.deepEqual(
+      migrated.regions.find((r) => r.id === "custom-cordoba"),
+      config.regions.find((r) => r.id === "custom-cordoba"),
+    );
+    assert.deepEqual(migrated.regions.find((r) => r.id === "mercedes-ba").center, {
+      lat: -34.65,
+      lng: -59.43,
+    });
+    for (const region of buenosAiresRegions()) {
+      const found = migrated.regions.find((r) => r.id === region.id);
+      assert.equal(found?.status, "activa", region.id);
+      assert.equal(found.name, region.name);
+      if (!["mercedes-ba", "lujan-ba", "chivilcoy-ba"].includes(region.id))
+        assert.deepEqual(found.center, region.center);
+    }
+    assert.equal(buenosAiresDistricts.length, 135);
+    assert.equal(new Set(buenosAiresDistricts.map((r) => r[0])).size, 135);
+    const audit = storage.sqlite
+      .prepare("SELECT * FROM commercial_audit WHERE action='province-coverage'")
+      .get();
+    assert.deepEqual(JSON.parse(audit.before_json), config);
+    assert.deepEqual(JSON.parse(audit.after_json), migrated);
+    assert.equal(storage.sqlite.prepare("SELECT COUNT(*) n FROM staff").get().n, 1);
+    migrated.regions.find((r) => r.id === "tigre-ba").status = "pausada";
+    storage.sqlite
+      .prepare("UPDATE market_settings SET body=?,version=9 WHERE setting_key='commercial'")
+      .run(JSON.stringify(migrated));
+  } finally {
+    storage.close();
+  }
+  storage = openStorage(directory);
+  try {
+    const row = storage.sqlite
+      .prepare("SELECT body,version FROM market_settings WHERE setting_key='commercial'")
+      .get();
+    assert.equal(row.version, 9);
+    assert.equal(JSON.parse(row.body).regions.find((r) => r.id === "tigre-ba").status, "pausada");
+    assert.equal(
+      storage.sqlite
+        .prepare("SELECT COUNT(*) n FROM commercial_audit WHERE action='province-coverage'")
+        .get().n,
+      1,
+    );
+  } finally {
+    storage.close();
+  }
+});
+
 test("Railway seed is idempotent, persists files/configuration and does not fabricate accounts", async (t) => {
   const { directory, storage } = await fixture(t);
   const { sqlite, DB, BUCKET } = storage;
-  assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM railway_migrations").get().n, 6);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM railway_migrations").get().n, 7);
   assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM accounts").get().n, 0);
   assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM staff").get().n, 0);
   assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM operations_cases").get().n, 0);

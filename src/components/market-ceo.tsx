@@ -116,7 +116,9 @@ export function LiveCeoPanel() {
                           ? "Configuración de planes, referidos y zonas"
                           : item.action === "region-status"
                             ? `Alta/baja de ciudad: ${data.config.regions.find((r) => r.id === item.entity_id)?.name ?? item.entity_id}`
-                            : "Ubicación de un pedido"}
+                            : item.action === "province-coverage"
+                              ? "Alta de la provincia de Buenos Aires"
+                              : "Ubicación de un pedido"}
                       </p>
                       <p className="text-xs text-muted-foreground">
                         {new Intl.DateTimeFormat("es-AR", {
@@ -140,6 +142,15 @@ function CitySwitches({ data, onSaved }: { data: CeoData; onSaved: () => Promise
   const [saved, setSaved] = useState({ config: data.config, version: data.version });
   const [busy, setBusy] = useState<string | null>(null);
   const [issue, setIssue] = useState("");
+  const [search, setSearch] = useState("");
+  const normalize = (value: string) =>
+    value
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+  const visibleRegions = saved.config.regions
+    .filter((r) => normalize(`${r.name} ${r.province}`).includes(normalize(search.trim())))
+    .sort((a, b) => a.name.localeCompare(b.name, "es"));
   useEffect(() => {
     setSaved({ config: data.config, version: data.version });
   }, [data.config, data.version]);
@@ -174,8 +185,25 @@ function CitySwitches({ data, onSaved }: { data: CeoData; onSaved: () => Promise
         </p>
       </div>
       <MarketErrorText error={issue} />
+      <div className="max-w-lg space-y-2">
+        <Label htmlFor="ceo-city-search">Buscar ciudad o partido</Label>
+        <Input
+          id="ceo-city-search"
+          type="search"
+          placeholder="Ej.: La Plata, Mar del Plata, Tigre…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <p className="text-xs text-muted-foreground">
+          {visibleRegions.length} de {saved.config.regions.length} zonas ·{" "}
+          {saved.config.regions.filter((r) => r.status === "activa").length} de alta
+        </p>
+      </div>
+      {!visibleRegions.length && (
+        <MarketNotice>No encontramos ciudades o partidos con esa búsqueda.</MarketNotice>
+      )}
       <div className="grid gap-4 md:grid-cols-2">
-        {saved.config.regions.map((region) => {
+        {visibleRegions.map((region) => {
           const active = region.status === "activa";
           const status = active
             ? "De alta"

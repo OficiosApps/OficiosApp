@@ -86,13 +86,13 @@ async function marketBytes(request, limit) {
   }
   return result;
 }
-async function marketBody(request) {
+async function marketBody(request, limit = 32000) {
   requireMarket(
     request.headers.get("content-type")?.startsWith("application/json"),
     "Se requiere JSON.",
     415,
   );
-  const bytes = await marketBytes(request, 32000);
+  const bytes = await marketBytes(request, limit);
   try {
     const value = JSON.parse(new TextDecoder().decode(bytes));
     requireMarket(
@@ -291,7 +291,9 @@ export async function handleMarket(request, env) {
     if (path === "/api/market/config" && request.method === "GET")
       return marketJson(publicMarketConfig((await readMarketConfig(env)).config));
     if (path.startsWith("/api/market/ceo/"))
-      return await handleCeo(request, env, viewer, marketBody);
+      return await handleCeo(request, env, viewer, (r) =>
+        marketBody(r, path === "/api/market/ceo/config" ? 512000 : 32000),
+      );
 
     if (path === "/api/market/providers" && request.method === "GET") {
       const rows = await marketRows(

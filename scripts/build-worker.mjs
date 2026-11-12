@@ -31,8 +31,9 @@ await walk(".output/public");
 if (!files["/index.html"]) throw new Error("Falta compilar la aplicación antes del Worker.");
 const customerAccess = await readFile("src/lib/customer-access.js", "utf8");
 const domain = await readFile("worker/market-domain.mjs", "utf8");
+const buenosAires = await readFile("worker/buenos-aires-regions.mjs", "utf8");
 const settings = (await readFile("worker/market-settings.mjs", "utf8")).replace(
-  /^import[\s\S]*?from ["']\.\/market-domain\.mjs["'];\r?\n/m,
+  /^import[\s\S]*?from ["']\.\/[^"']+["'];\r?\n/gm,
   "",
 );
 const staffMail = await readFile("worker/staff-mail.mjs", "utf8");
@@ -52,6 +53,6 @@ const wrapper = (await readFile("worker/index.mjs", "utf8"))
 await mkdir("dist/server", { recursive: true });
 await writeFile(
   "dist/server/index.js",
-  `${customerAccess}\n${domain}\n${settings}\n${staffMail}\n${operations}\n${api}\n${handler}\n${wrapper}`,
+  `${customerAccess}\n${domain}\n${buenosAires}\n${settings}\n${staffMail}\n${operations}\n${api}\n${handler}\n${wrapper}`,
 );
 console.log(`Worker listo: ${Object.keys(files).length} archivos del sitio y API de chat.`);

@@ -3,12 +3,24 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import { handleMarket, marketPageAllowed, marketViewer } from "../worker/market-api.mjs";
-function setup() {
+import { defaultMarketConfig } from "../worker/market-settings.mjs";
+function setup({ legacyRegions = true } = {}) {
   const db = new DatabaseSync(":memory:");
   for (const file of readdirSync(new URL("../drizzle/", import.meta.url))
     .filter((file) => file.endsWith(".sql"))
     .sort())
     db.exec(readFileSync(new URL("../drizzle/" + file, import.meta.url), "utf8"));
+  // Older coverage remains an explicit fixture for city-opening/closing regressions.
+  if (legacyRegions) {
+    const config = defaultMarketConfig();
+    config.regions = config.regions.filter((r) =>
+      ["mercedes-ba", "lujan-ba", "chivilcoy-ba", "caba-ar"].includes(r.id),
+    );
+    for (const r of config.regions) if (r.id !== "mercedes-ba") r.status = "preparacion";
+    db.prepare("INSERT INTO market_settings VALUES('commercial',?,0,'fixture','fixture',1)").run(
+      JSON.stringify(config),
+    );
+  }
   const stored = new Map();
   function prepare(sql, values = []) {
     return {
@@ -775,6 +787,72 @@ test("commercial settings are CEO-only, versioned, audited and published without
     (await call(env, "/ceo/config", "ceo", { version: current.version, config: draft }, "PUT"))
       .status,
     400,
+  );
+});
+
+test("all Buenos Aires districts support registration, orders and CEO switches without opening CABA", async () => {
+  const { env } = setup({ legacyRegions: false });
+  const published = (await call(env, "/config", null)).data;
+  assert.equal(published.regions.length, 135);
+  assert.ok(published.regions.every((r) => r.province === "Buenos Aires" && r.status === "activa"));
+  const representatives = [
+    "la-plata-ba",
+    "la-matanza-ba",
+    "tigre-ba",
+    "bahia-blanca-ba",
+    "general-pueyrredon-ba",
+    "patagones-ba",
+    "jose-c-paz-ba",
+    "leandro-n-alem-ba",
+  ];
+  for (const id of representatives) {
+    assert.ok(
+      published.regions.some((r) => r.id === id),
+      id,
+    );
+    assert.equal(
+      (await call(env, "/account", id, { ...profile("profesional"), cityId: id })).status,
+      201,
+      id,
+    );
+  }
+  await register(env, "client");
+  for (const cityId of representatives)
+    assert.equal((await call(env, "/jobs", "client", { ...details, cityId })).status, 201, cityId);
+  assert.equal((await call(env, "/jobs", "client", { ...details, cityId: "caba-ar" })).status, 400);
+  const saved = (await call(env, "/ceo/config", "ceo")).data;
+  // The complete 136-region configuration must remain editable through the real JSON body limit.
+  saved.config.plans[1].priceCents = 1250;
+  saved.config.plans[1].benefits = Array.from({ length: 12 }, (_, i) =>
+    `${i}. Beneficio profesional detallado `.padEnd(160, "x"),
+  );
+  for (const region of saved.config.regions) region.name = region.name.padEnd(100, " ");
+  assert.ok(
+    Buffer.byteLength(JSON.stringify({ config: saved.config, version: saved.version })) > 32000,
+  );
+  const updated = await call(
+    env,
+    "/ceo/config",
+    "ceo",
+    { config: saved.config, version: saved.version },
+    "PUT",
+  );
+  assert.equal(updated.status, 200);
+  const closed = await call(
+    env,
+    "/ceo/regions/tigre-ba/status",
+    "ceo",
+    { version: updated.data.version, active: false },
+    "PATCH",
+  );
+  assert.equal(closed.status, 200);
+  assert.equal(
+    (await call(env, "/jobs", "client", { ...details, cityId: "tigre-ba" })).status,
+    400,
+  );
+  assert.equal(
+    (await call(env, "/jobs", "client", { ...details, cityId: "la-plata-ba" })).status,
+    201,
   );
 });
 
