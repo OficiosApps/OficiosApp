@@ -170,7 +170,8 @@ export function createApplication({
       const setCookies = response.headers.getSetCookie();
       if (setCookies.length) outgoing.setHeader("set-cookie", setCookies);
       outgoing.setHeader("x-content-type-options", "nosniff");
-      outgoing.setHeader("referrer-policy", "strict-origin-when-cross-origin");
+      if (!outgoing.hasHeader("referrer-policy"))
+        outgoing.setHeader("referrer-policy", "strict-origin-when-cross-origin");
       if (origin.startsWith("https://"))
         outgoing.setHeader("strict-transport-security", "max-age=31536000");
       if (method === "HEAD" || !response.body) {

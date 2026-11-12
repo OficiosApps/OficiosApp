@@ -234,6 +234,9 @@ test("Railway HTTP serves installable PWA and real APIs while rejecting forged C
   const call = (path, init) => fetch(base + path, { redirect: "manual", ...init });
   assert.equal((await call("/healthz")).status, 200);
   assert.equal((await call("/")).status, 200);
+  const managementEntry = await call("/gestion?invitacion=00000000-0000-4000-8000-000000000001");
+  assert.equal(managementEntry.status, 200);
+  assert.equal(managementEntry.headers.get("referrer-policy"), "no-referrer");
   const manifest = await (await call("/manifest.webmanifest")).json();
   assert.equal(manifest.display, "standalone");
   for (const icon of manifest.icons) assert.equal((await call(icon.src)).status, 200);
@@ -250,6 +253,7 @@ test("Railway HTTP serves installable PWA and real APIs while rejecting forged C
   assert.equal((await call("/ceo", { headers: forged })).status, 403);
   assert.equal((await call("/data/oficios.sqlite")).status, 404);
   const start = await call("/auth/google?return_to=%2Fceo");
+  assert.equal(start.headers.get("referrer-policy"), "no-referrer");
   const target = new URL(start.headers.get("location"));
   loginNonce = target.searchParams.get("nonce");
   const authCookie = start.headers.getSetCookie()[0].split(";")[0];
